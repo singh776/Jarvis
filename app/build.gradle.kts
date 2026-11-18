@@ -15,8 +15,23 @@ android {
         versionName = "2.0"
     }
 
+    // Same key on every GitHub build, so new APKs install over the old one
+    // (no more "App not installed").
+    signingConfigs {
+        create("jarvis") {
+            storeFile = rootProject.file("jarvis.keystore")
+            storePassword = "jarvis123"
+            keyAlias = "jarvis"
+            keyPassword = "jarvis123"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("jarvis")
+        }
         release {
+            signingConfig = signingConfigs.getByName("jarvis")
             isMinifyEnabled = false
         }
     }
