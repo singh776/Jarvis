@@ -175,4 +175,20 @@ object Ui {
         }
         v.requestApplyInsets()
     }
+
+    /** Plain error screen (no custom views) so a crash can be read and sent. */
+    fun showError(a: Activity, msg: String) {
+        val tv = TextView(a).apply {
+            text = "JARVIS ERROR — is screen da screenshot bhejo:\n\n" + msg
+            setTextIsSelectable(true)
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setPadding(36, 160, 36, 200)
+        }
+        val sv = android.widget.ScrollView(a).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(tv)
+        }
+        a.setContentView(sv)
+    }
 }

@@ -64,12 +64,16 @@ class SettingsActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        build() // refresh values / permission status every time we come back
+        try {
+            build() // refresh values / permission status every time we come back
+        } catch (e: Throwable) {
+            Ui.showError(this, android.util.Log.getStackTraceString(e))
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        build()
+        try { build() } catch (e: Throwable) { Ui.showError(this, android.util.Log.getStackTraceString(e)) }
     }
 
     override fun onPause() {

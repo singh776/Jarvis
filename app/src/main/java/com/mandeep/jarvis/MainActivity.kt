@@ -38,6 +38,8 @@ import java.util.Locale
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
+    private var showingCrash = false
+
     // ---- views (rebuilt when the theme changes)
     private lateinit var orb: OrbView
     private lateinit var status: TextView
@@ -81,6 +83,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (showLastCrash()) return
+        try {
+            startUp()
+        } catch (e: Throwable) {
+            showingCrash = true
+            Ui.showError(this, android.util.Log.getStackTraceString(e))
+        }
+    }
+
+    private fun startUp() {
         buildUi()
         setStatus(idleText())
         tts = TextToSpeech(this, this)
@@ -108,6 +120,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onResume() {
         super.onResume()
+        if (showingCrash) return
         if (uiSignature != Ui.signature(this)) buildUi()
         updateLangButton()
         if (!busy && !listening && mode == OrbView.Mode.IDLE) setStatus(idleText())
@@ -116,12 +129,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (showingCrash) return
         if (uiSignature != Ui.signature(this)) buildUi()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (showingCrash) return
         handleAssist(intent)
     }
 
@@ -746,7 +761,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
+    /** If Jarvis crashed last time, show the error (so it can be sent to fix it). */
+    private fun showLastCrash(): Boolean {
+        val f = java.io.File(filesDir, "crash.txt")
+        if (!f.exists()) return false
+        val msg = try { f.readText() } catch (e: Exception) { "?" }
+        f.delete()
+        showingCrash = true
+        Ui.showError(this, msg)
+        return true
+    }
+
     override fun onDestroy() {
+        if (showingCrash) { super.onDestroy(); return }
         Gemini.onRetry = null
         recognizer?.destroy()
         tts?.shutdown()
