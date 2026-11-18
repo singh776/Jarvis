@@ -138,6 +138,9 @@ object Ui {
     @Suppress("DEPRECATION")
     fun setupWindow(a: Activity, p: Palette) {
         val w = a.window
+        // Make sure the window's DecorView exists first. Without this,
+        // insetsController crashes with a NullPointerException on Android 15/16.
+        val decor = w.decorView
         w.statusBarColor = Color.TRANSPARENT
         w.navigationBarColor = Color.TRANSPARENT
         w.setBackgroundDrawable(ColorDrawable(p.bg))
@@ -149,13 +152,16 @@ object Ui {
             w.setDecorFitsSystemWindows(false)
             val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
                 WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            w.insetsController?.setSystemBarsAppearance(if (p.dark) 0 else light, light)
+            val look = if (p.dark) 0 else light
+            decor.windowInsetsController?.setSystemBarsAppearance(look, light)
+            // once the screen is attached, apply again (the controller may not exist yet)
+            decor.post { decor.windowInsetsController?.setSystemBarsAppearance(look, light) }
         } else {
             var flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
             if (!p.dark) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-            w.decorView.systemUiVisibility = flags
+            decor.systemUiVisibility = flags
         }
     }
 
