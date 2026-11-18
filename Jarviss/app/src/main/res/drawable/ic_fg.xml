@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Arc-reactor style launcher icon (original design) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#3FE0FF"
+        android:strokeWidth="2"
+        android:fillColor="#00000000"
+        android:pathData="M54,24 A30,30 0 1,1 53.99,24 Z" />
+    <path
+        android:strokeColor="#3FE0FF"
+        android:strokeWidth="5"
+        android:fillColor="#00000000"
+        android:pathData="M54,32 A22,22 0 0,1 76,54 M54,76 A22,22 0 0,1 32,54" />
+    <path
+        android:strokeColor="#1A6F80"
+        android:strokeWidth="5"
+        android:fillColor="#00000000"
+        android:pathData="M76,54 A22,22 0 0,1 54,76 M32,54 A22,22 0 0,1 54,32" />
+    <path
+        android:fillColor="#E8FBFF"
+        android:pathData="M54,44 A10,10 0 1,1 53.99,44 Z" />
+    <path
+        android:strokeColor="#3FE0FF"
+        android:strokeWidth="3"
+        android:fillColor="#00000000"
+        android:pathData="M54,40 A14,14 0 1,1 53.99,40 Z" />
+</vector>
