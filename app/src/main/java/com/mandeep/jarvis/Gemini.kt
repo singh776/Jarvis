@@ -73,13 +73,16 @@ object Gemini {
      * Blocking call — run on a background thread. Returns the model's text.
      * Retries busy errors (1s, 2s, 4s), then tries the backup model (and retries it once).
      */
-    fun generate(ctx: Context, system: String, contents: JSONArray, json: Boolean): String {
+    /** The quick model used for Live chat / the side-button popup (Settings → backup model). */
+    fun fastModel(ctx: Context): String = fallbackModel(ctx).ifEmpty { DEFAULT_FALLBACK_MODEL }
+
+    fun generate(ctx: Context, system: String, contents: JSONArray, json: Boolean, modelOverride: String? = null): String {
         val key = apiKey(ctx)
         if (key.isEmpty()) throw IllegalStateException("No Gemini API key")
 
         val contents = sanitize(contents)
         if (contents.length() == 0) throw GeminiException(400, "Gemini error 400: empty request")
-        val main = model(ctx)
+        val main = modelOverride ?: model(ctx)
         var last: GeminiException? = null
 
         // 1) main model: first try + up to 3 retries
@@ -98,7 +101,7 @@ object Gemini {
         }
 
         // 2) backup model: one try + one retry
-        val backup = fallbackModel(ctx)
+        val backup = if (modelOverride != null && modelOverride != model(ctx)) model(ctx) else fallbackModel(ctx)
         if (fallbackEnabled(ctx) && backup.isNotEmpty() && backup != main) {
             for (attempt in 0..1) {
                 try {

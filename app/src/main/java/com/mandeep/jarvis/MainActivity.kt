@@ -72,6 +72,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var liveMuted = false
     private var liveMisses = 0
 
+    private var liveChat: LinearLayout? = null
+    private var liveScroll: ScrollView? = null
+    private var livePending: TextView? = null
+    private var drawer: FrameLayout? = null
+    /** Id of the conversation on screen (saved in the chat list). */
+    private var chatId: String = ChatStore.newId()
+
     /** Chat / Task switch under the suggestions. Task = "do it on my phone". */
     private var taskMode = false
     private lateinit var p: Ui.Palette
@@ -123,7 +130,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun startUp() {
-        brain.clearHistory() // every time the app starts: fresh chat (long-term memory stays)
+        brain.clearHistory() // every time the app starts: a new chat (old ones are in the ≡ list)
         buildUi()
         setStatus(idleText())
         tts = TextToSpeech(this, this)
@@ -167,6 +174,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     /** Clears the screen and the short chat history. Long-term memory (Settings → Memory) stays. */
     private fun newConversation() {
+        saveChat()
+        chatId = ChatStore.newId()
         brain.clearHistory()
         messages.clear()
         liveUserBubble = null
@@ -188,6 +197,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onPause()
         if (showingCrash) return
         lastPausedAt = System.currentTimeMillis()
+        saveChat()
         WakeService.setAppVisible(false)
         orb.removeCallbacks(autoListenTask)
         if (listening) {
@@ -199,7 +209,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", true)
+    private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", false)
 
     private val autoListenTask = Runnable {
         if (!busy && !listening && mode == OrbView.Mode.IDLE && tts?.isSpeaking != true && hasWindowFocus()) {
@@ -233,7 +243,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun handleAssist(i: Intent?) {
         if (i?.action == Intent.ACTION_ASSIST) {
             if (!i.hasExtra(EXTRA_SCREENSHOT)) newConversation()
-            orb.postDelayed({ startListening() }, 400)
+            if (i.getBooleanExtra(EXTRA_OPEN_LIVE, false)) {
+                i.removeExtra(EXTRA_OPEN_LIVE)
+                orb.postDelayed({ openLive() }, 300)
+            } else orb.postDelayed({ startListening() }, 400)
         }
     }
 
@@ -253,6 +266,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val root = FrameLayout(this).apply { setBackgroundColor(p.bg) }
         rootFrame = root
         liveLayer = null
+        drawer = null
 
         // Gemini Live-style glow rising from the bottom while listening / speaking
         glow = GlowView(this).apply { dark = p.dark }
@@ -272,8 +286,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val menu = GlyphView(this, Glyph.MENU, p.text).apply {
             glyphScale = 0.5f
             isClickable = true
-            contentDescription = "Settings"
-            setOnClickListener { openSettings(null) }
+            contentDescription = "Chats"
+            setOnClickListener { openDrawer() }
         }
         top.addView(menu, LinearLayout.LayoutParams(dp(44), dp(44)))
         val title = Ui.text(this, "Singh AI", 22f, p.text, Ui.regular).apply {
@@ -453,7 +467,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             iconColor = p.text
             ringBg = Color.TRANSPARENT
             contentDescription = "Talk"
-            setOnClickListener { if (listening) stopListening() else startListening() }
+            setOnClickListener { micTapped() }
         }
         pill.addView(mic, LinearLayout.LayoutParams(dp(48), dp(48)))
         liveBtn = LiveButton(this).apply {
@@ -609,6 +623,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun addMessage(user: Boolean, text: String): TextView {
         messages.add(Msg(user, text))
+        addLiveLine(user, text)
+        saveChatSoon()
         while (messages.size > 80) {
             messages.removeAt(0)
             if (chat.childCount > 0) chat.removeViewAt(0)
@@ -644,7 +660,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     /** Shows what the mic is hearing in a user bubble that updates live. */
     private fun showLiveText(text: String) {
-        if (liveMode) liveText?.text = text
+        if (liveMode) showLivePending(text)
         val b = liveUserBubble
         if (b == null) liveUserBubble = addBubbleView(true, text, animate = true)
         else { b.text = text; scrollToEnd() }
@@ -656,7 +672,142 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (b != null) {
             b.text = text
             messages.add(Msg(true, text))
+            addLiveLine(true, text)
+            saveChatSoon()
         } else addMessage(true, text)
+    }
+
+    // ============================================================ chat list (≡)
+
+    private val saveTask = Runnable { saveChat() }
+
+    private fun saveChatSoon() {
+        if (!::orb.isInitialized) return
+        orb.removeCallbacks(saveTask)
+        orb.postDelayed(saveTask, 600)
+    }
+
+    /** Saves the conversation on screen into the chat list. */
+    private fun saveChat() {
+        if (messages.isEmpty()) return
+        try { ChatStore.save(this, chatId, messages.map { it.user to it.text }, brain.exportHistory()) } catch (e: Exception) {}
+    }
+
+    /** Opens an old conversation so you can read it and keep talking in it. */
+    private fun openChat(id: String) {
+        val c = ChatStore.get(this, id) ?: return
+        saveChat()
+        chatId = c.id
+        messages.clear()
+        liveUserBubble = null
+        thinkingAnim?.cancel(); thinkingAnim = null; thinkingBubble = null
+        chat.removeAllViews()
+        for ((u, t) in ChatStore.messages(c)) {
+            messages.add(Msg(u, t))
+            addBubbleView(u, t, animate = false)
+        }
+        brain.importHistory(c.hist)
+        updateHero(animate = false)
+        scrollToEnd()
+    }
+
+    /** Gemini-style side panel with all saved chats. */
+    private fun openDrawer() {
+        if (drawer != null) return
+        saveChat()
+        val w = (resources.displayMetrics.widthPixels * 0.84f).toInt()
+        val layer = FrameLayout(this)
+        val dim = View(this).apply {
+            setBackgroundColor(Color.argb(110, 0, 0, 0))
+            alpha = 0f
+            setOnClickListener { closeDrawer() }
+        }
+        layer.addView(dim, FrameLayout.LayoutParams(-1, -1))
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(p.bg)
+            isClickable = true
+            elevation = dp(12).toFloat()
+        }
+        layer.addView(panel, FrameLayout.LayoutParams(w, -1, Gravity.START))
+
+        fun row(g: Glyph, label: String, onTap: () -> Unit) = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = Ui.pressable(Ui.rounded(Color.TRANSPARENT, dp(24).toFloat()), Ui.rounded(p.surface2, dp(24).toFloat()))
+            isClickable = true
+            setOnClickListener { onTap() }
+            addView(GlyphView(context, g, p.text).apply { glyphScale = 0.5f }, LinearLayout.LayoutParams(dp(30), dp(30)))
+            addView(Ui.text(context, label, 17f, p.text, Ui.medium).apply { setPadding(dp(14), 0, 0, 0) })
+        }
+
+        val head = Ui.text(this, "Singh AI", 24f, p.text, Ui.regular).apply { setPadding(dp(20), dp(16), dp(20), dp(12)) }
+        panel.addView(head)
+        panel.addView(row(Glyph.PEN, if (punjabi) "ਨਵੀਂ ਚੈਟ" else "New chat") { closeDrawer(); newConversation() },
+            LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(8), 0, dp(8), 0) })
+        panel.addView(Ui.text(this, if (punjabi) "ਪੁਰਾਣੀਆਂ ਚੈਟਾਂ" else "Recent", 14f, p.muted, Ui.medium).apply {
+            setPadding(dp(22), dp(18), dp(22), dp(6))
+        })
+
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(8)) }
+        val chats = ChatStore.all(this)
+        if (chats.isEmpty()) list.addView(Ui.text(this, if (punjabi) "ਹਾਲੇ ਕੋਈ ਚੈਟ ਨਹੀਂ" else "No chats yet", 15f, p.muted).apply {
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        })
+        for (c in chats) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                val sel = c.id == chatId
+                background = Ui.pressable(
+                    Ui.rounded(if (sel) p.surface else Color.TRANSPARENT, dp(20).toFloat()),
+                    Ui.rounded(p.surface2, dp(20).toFloat())
+                )
+                isClickable = true
+                setOnClickListener { closeDrawer(); openChat(c.id) }
+                setOnLongClickListener {
+                    android.app.AlertDialog.Builder(this@MainActivity, Ui.dialogTheme(this@MainActivity))
+                        .setTitle(if (punjabi) "ਇਹ ਚੈਟ ਮਿਟਾਈਏ?" else "Delete this chat?")
+                        .setMessage(c.title)
+                        .setPositiveButton(if (punjabi) "ਮਿਟਾਓ" else "Delete") { _, _ ->
+                            ChatStore.delete(this@MainActivity, c.id)
+                            if (c.id == chatId) { chatId = ChatStore.newId() }
+                            (parent as? ViewGroup)?.removeView(this)
+                        }
+                        .setNegativeButton(if (punjabi) "ਰਹਿਣ ਦਿਓ" else "Cancel", null)
+                        .show()
+                    true
+                }
+            }
+            item.addView(Ui.text(this, c.title, 16f, p.text, Ui.regular).apply {
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            item.addView(Ui.text(this, ChatStore.ago(c.time), 12f, p.muted))
+            list.addView(item, LinearLayout.LayoutParams(-1, -2))
+        }
+        val sc = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(list) }
+        panel.addView(sc, LinearLayout.LayoutParams(-1, 0, 1f))
+        panel.addView(row(Glyph.GEAR, if (punjabi) "ਸੈਟਿੰਗ" else "Settings") { closeDrawer(); openSettings(null) },
+            LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(8), 0, dp(8), dp(8)) })
+
+        Ui.onInsets(layer) { t, b -> panel.setPadding(0, t, 0, b) }
+        rootFrame.addView(layer, FrameLayout.LayoutParams(-1, -1))
+        drawer = layer
+        panel.translationX = -w.toFloat()
+        panel.animate().translationX(0f).setDuration(280).setInterpolator(DecelerateInterpolator(2f)).withLayer().start()
+        dim.animate().alpha(1f).setDuration(280).start()
+    }
+
+    private fun closeDrawer() {
+        val layer = drawer ?: return
+        drawer = null
+        val panel = layer.getChildAt(1)
+        val dim = layer.getChildAt(0)
+        dim.animate().alpha(0f).setDuration(200).start()
+        panel.animate().translationX(-panel.width.toFloat()).setDuration(220)
+            .setInterpolator(android.view.animation.AccelerateInterpolator(1.5f)).withLayer()
+            .withEndAction { rootFrame.removeView(layer) }.start()
     }
 
     private fun dropLiveText() {
@@ -709,14 +860,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (text.isNotBlank()) addMessage(false, text)
         val engine = tts
         if (!ttsReady || engine == null || text.isBlank()) {
-            if (liveMode && text.isNotBlank()) fadeLiveText(text)
+
             setMode(OrbView.Mode.IDLE)
             setStatus(idleText())
             return
         }
         VoiceSettings.apply(this, engine, text, punjabiVoice)
         engine.setAudioAttributes(CarAudio.voiceAttributes(this))
-        if (liveMode) fadeLiveText(text)
         listenAfterSpeech = listenAfter
         engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-" + System.currentTimeMillis())
         setStatus("Speaking…")
@@ -740,7 +890,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     // ================================================================= voice in
 
     private fun startListening() {
-        if (busy) return
+        if (busy || listening) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
             return
@@ -772,6 +922,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         setStatus("Listening…")
         rec.startListening(i)
     }
+
+    /** Mic button: speaking → stop & listen · listening → done · idle → listen. */
+    private fun micTapped() {
+        orb.removeCallbacks(autoListenTask)
+        when {
+            busy -> toast(if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…")
+            tts?.isSpeaking == true -> { tts?.stop(); listenAfterSpeech = false; setMode(OrbView.Mode.IDLE); startListening() }
+            listening -> stopListening()
+            else -> startListening()
+        }
+    }
+
+    private var busyRetry = 0
 
     private fun stopListening() {
         recognizer?.stopListening()
@@ -805,6 +968,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
                     "Check the internet"
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Please allow the microphone"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY, SpeechRecognizer.ERROR_CLIENT -> {
+                    // the phone's speech engine was still busy → try once more
+                    if (busyRetry++ < 1) {
+                        recognizer?.destroy(); recognizer = null
+                        orb.postDelayed({ startListening() }, 350)
+                        return
+                    }
+                    idleText()
+                }
                 12, 13 -> // language not supported / unavailable
                     "This language isn't on the phone — switch ${langBtn.text}"
                 else -> idleText()
@@ -828,6 +1000,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 setStatus(idleText())
             } else {
                 liveMisses = 0
+                busyRetry = 0
                 handle(text)
             }
         }
@@ -882,7 +1055,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             var failed = false
             val result: Reply = try {
                 if (file != null) Reply(brain.askAbout(text, file, pa, paVoice), null)
-                else brain.ask(asked, pa, paVoice, info)
+                else brain.ask(asked, pa, paVoice, info, fast = liveMode)
             } catch (e: Exception) {
                 failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
@@ -1281,7 +1454,55 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .withEndAction {
                 rootFrame.removeView(layer)
                 livePill = null; liveGlow = null; liveSpark = null; liveText = null; liveMicBtn = null
+                liveChat = null; liveScroll = null; livePending = null
             }.start()
+    }
+
+    /** Adds one line to the Live conversation: you on the right (grey bubble), Singh AI on the left (big text). */
+    private fun addLiveLine(user: Boolean, text: String, animate: Boolean = true) {
+        val lc = liveChat ?: return
+        if (text.isBlank()) return
+        livePending?.let { lc.removeView(it) }
+        livePending = null
+        liveText?.let { if (it.parent != null) lc.removeView(it) }
+        val tv = if (user) Ui.text(this, text, 17f, p.text, Ui.regular).apply {
+            background = Ui.rounded(p.surface2, dp(20).toFloat())
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+        } else Ui.text(this, text, 22f, p.text, Ui.regular).apply {
+            setLineSpacing(0f, 1.1f)
+            setPadding(dp(2), dp(6), dp(2), dp(6))
+        }
+        val lp = LinearLayout.LayoutParams(-2, -2).apply {
+            gravity = if (user) Gravity.END else Gravity.START
+            topMargin = dp(12)
+            if (user) marginStart = dp(48)
+        }
+        lc.addView(tv, lp)
+        while (lc.childCount > 30) lc.removeViewAt(0)
+        if (animate) {
+            tv.alpha = 0f
+            tv.translationY = dp(14).toFloat()
+            tv.animate().alpha(1f).translationY(0f).setDuration(260).setInterpolator(DecelerateInterpolator()).start()
+        }
+        liveScroll?.let { s -> s.post { s.smoothScrollTo(0, lc.height) } }
+    }
+
+    /** What the mic hears right now (updates while you talk). */
+    private fun showLivePending(text: String) {
+        val lc = liveChat ?: return
+        liveText?.let { if (it.parent != null) lc.removeView(it) }
+        var tv = livePending
+        if (tv == null) {
+            tv = Ui.text(this, text, 17f, p.muted, Ui.regular).apply {
+                background = Ui.rounded(p.surface2, dp(20).toFloat())
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+            }
+            lc.addView(tv, LinearLayout.LayoutParams(-2, -2).apply {
+                gravity = Gravity.END; topMargin = dp(12); marginStart = dp(48)
+            })
+            livePending = tv
+        } else tv.text = text
+        liveScroll?.let { s -> s.post { s.smoothScrollTo(0, lc.height) } }
     }
 
     private fun fadeLiveText(text: String) {
@@ -1330,28 +1551,35 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         top.addView(lang, FrameLayout.LayoutParams(-2, dp(36), Gravity.END or Gravity.CENTER_VERTICAL))
         col.addView(top, LinearLayout.LayoutParams(-1, dp(60)))
 
-        // middle: sparkle + what is being said
-        val mid = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-        }
+        // middle: animated sparkle on top, then the conversation (like a live chat)
         val sp = SparkleView(this).apply {
             dark = p.dark
             mode = this@MainActivity.mode
             setOnClickListener { if (listening) stopListening() else if (!busy) startListening() }
         }
-        mid.addView(sp, LinearLayout.LayoutParams(dp(72), dp(72)))
+        col.addView(sp, LinearLayout.LayoutParams(dp(64), dp(64)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         liveSpark = sp
-        val tv = Ui.text(this, if (punjabi) "ਬੋਲੋ, ਮੈਂ ਸੁਣ ਰਿਹਾ ਹਾਂ…" else "Go ahead, I'm listening…", 30f, p.text, Ui.regular).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(28), dp(22), dp(28), 0)
-            maxLines = 7
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setLineSpacing(0f, 1.08f)
+        val lc = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(24))
         }
-        mid.addView(tv, LinearLayout.LayoutParams(-1, -2))
+        val ls = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(dp(40))
+            addView(lc, ViewGroup.LayoutParams(-1, -2))
+        }
+        col.addView(ls, LinearLayout.LayoutParams(-1, 0, 1f))
+        liveChat = lc
+        liveScroll = ls
+        val tv = Ui.text(this, if (punjabi) "ਬੋਲੋ, ਮੈਂ ਸੁਣ ਰਿਹਾ ਹਾਂ…" else "Go ahead, I'm listening…", 26f, p.muted, Ui.regular).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(40), dp(8), 0)
+        }
+        lc.addView(tv, LinearLayout.LayoutParams(-1, -2))
         liveText = tv
-        col.addView(mid, LinearLayout.LayoutParams(-1, 0, 1f))
+        // show the last few lines of this chat for context
+        for (mm in messages.takeLast(4)) addLiveLine(mm.user, mm.text, animate = false)
 
         // bottom: (+) (video)  [ glowing pill ]  (mic) (x)
         val row = LinearLayout(this).apply {
@@ -1406,6 +1634,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (drawer != null) { closeDrawer(); return }
         if (liveMode) { closeLive(); return }
         @Suppress("DEPRECATION")
         super.onBackPressed()
@@ -1453,5 +1682,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         private const val REQ_PHOTO = 22
         private const val REQ_FILE = 23
         const val EXTRA_SCREENSHOT = "screenshot_path"
+        const val EXTRA_OPEN_LIVE = "open_live"
     }
 }

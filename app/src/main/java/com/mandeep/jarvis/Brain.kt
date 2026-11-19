@@ -28,6 +28,25 @@ class Brain(private val context: Context) {
         saveHistory()
     }
 
+    /** The short chat history, to save with a conversation (chat list on the left). */
+    fun exportHistory(): JSONArray {
+        val arr = JSONArray()
+        for ((role, msg) in history) arr.put(JSONObject().put("r", role).put("t", msg))
+        return arr
+    }
+
+    /** Continue an old conversation: load its history back. */
+    fun importHistory(arr: JSONArray?) {
+        history.clear()
+        if (arr != null) for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val t = o.optString("t")
+            if (t.isNotBlank()) history.add(o.optString("r", "user") to t)
+        }
+        while (history.size > 12) history.removeAt(0)
+        saveHistory()
+    }
+
     // ------------------------------------------------------------- memory
     // Facts the user tells Singh AI (name, family, likes…). Kept forever until cleared.
 
@@ -49,7 +68,9 @@ class Brain(private val context: Context) {
     }
 
     /** Runs on a background thread. Throws on network / API errors. */
-    fun ask(text: String, punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String): Reply {
+    /** [fast] = use the quick Flash-Lite model (Live chat, side-button popup) for very fast answers. */
+    fun ask(text: String, punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String, fast: Boolean = false): Reply {
+        val modelOverride = if (fast) Gemini.fastModel(context) else null
         if (apiKey.isEmpty()) {
             return offline(text, punjabiMode)
                 ?: Reply(
@@ -67,13 +88,13 @@ class Brain(private val context: Context) {
         val system = systemPrompt(punjabiMode, punjabiVoice, phoneInfo)
         val out = try {
             try {
-                Gemini.generate(context, system, contents, json = true)
+                Gemini.generate(context, system, contents, json = true, modelOverride = modelOverride)
             } catch (e: GeminiException) {
                 if (e.code != 400 || e.message.orEmpty().contains("API key", true)) throw e
                 // Old saved chat is broken → wipe it and ask again with only this message.
                 history.clear()
                 history.add("user" to text)
-                Gemini.generate(context, system, JSONArray().put(Gemini.part("user", text)), json = true)
+                Gemini.generate(context, system, JSONArray().put(Gemini.part("user", text)), json = true, modelOverride = modelOverride)
             }
         } catch (e: Exception) {
             if (history.isNotEmpty()) history.removeAt(history.size - 1)
