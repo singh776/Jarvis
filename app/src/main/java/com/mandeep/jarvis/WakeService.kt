@@ -241,12 +241,17 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ… ਬੋਲੋ" else "Listening… go ahead",
             "Singh AI", OrbView.Mode.LISTENING
         )
-        try {
-            listeningNow = true
-            rec.startListening(i)
-        } catch (e: Exception) {
-            endSession(true)
+        CarAudio.showOnCar("Singh AI", if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ… ਬੋਲੋ" else "Listening… go ahead")
+        val start = Runnable {
+            try {
+                listeningNow = true
+                rec.startListening(i)
+            } catch (e: Exception) {
+                endSession(true)
+            }
         }
+        // In Android Auto: use the truck's microphone (Bluetooth needs a moment to switch over)
+        if (CarAudio.micOn(this)) main.postDelayed(start, 700) else start.run()
     }
 
     private fun restartSoon(ms: Long) {
@@ -285,6 +290,14 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                     restartSoon(wait)
                 }
                 State.COMMAND -> {
+                    if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT &&
+                        CarAudio.isCarMicOn()
+                    ) {
+                        // truck mic didn't work → try again with the phone mic
+                        CarAudio.carMicFailed(this@WakeService)
+                        main.postDelayed({ if (state == State.COMMAND) listenForCommand() }, 300)
+                        return
+                    }
                     if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && commandMisses == 0) {
                         commandMisses++
                         main.postDelayed({ if (state == State.COMMAND) listenForCommand() }, 200)
@@ -357,6 +370,8 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     private fun handle(text: String) {
         state = State.BUSY
         stopRecognizer()
+        CarAudio.micOff(this)
+        CarAudio.showOnCar(text, if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…")
         val pa = punjabi
         val acc = JarvisAccess.instance
         acc?.showMini(text, if (pa) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…", OrbView.Mode.THINKING)
@@ -411,6 +426,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         listenAfter = again
         hideAfterSpeech = hideAfter
         JarvisAccess.instance?.showMini(text, "Singh AI", OrbView.Mode.SPEAKING)
+        CarAudio.showOnCar("Singh AI", text)
         val t = tts
         if (!ttsReady || t == null) { afterSpeaking(null); return }
         val locale = when {
@@ -420,6 +436,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         }
         t.setLanguage(locale)
         t.setSpeechRate(prefs.getFloat("voice_speed", 1.0f))
+        t.setAudioAttributes(CarAudio.voiceAttributes(this)) // car → truck speakers
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "wake-" + System.currentTimeMillis())
     }
 
@@ -440,6 +457,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
 
     /** Closes the popup and goes back to waiting for "Singh AI". */
     fun endSession(@Suppress("UNUSED_PARAMETER") hide: Boolean) {
+        CarAudio.micOff(this)
         JarvisAccess.instance?.hideMini()
         tts?.stop()
         stopRecognizer()

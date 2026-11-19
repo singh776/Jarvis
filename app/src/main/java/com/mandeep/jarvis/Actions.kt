@@ -48,7 +48,10 @@ class Actions(private val activity: Context) {
         return try {
             when (action.optString("type", "none")) {
                 "open_app" -> msg(openApp(action.optString("name"), pa))
-                "youtube" -> msg(youtube(action.optString("query")))
+                "youtube" -> msg(
+                    if (CarAudio.inCar(activity)) playMusic(action.optString("query"), "youtube music")
+                    else youtube(action.optString("query"))
+                )
                 "web_search" -> msg(webSearch(action.optString("query")))
                 "maps" -> msg(view("geo:0,0?q=" + Uri.encode(action.optString("query"))))
                 "dial", "call" -> msg(call(action, pa))
@@ -119,13 +122,37 @@ class Actions(private val activity: Context) {
 
     private fun norm(s: String) = s.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
+    /**
+     * Plays the top YouTube video for [query] straight away (not just the search page).
+     * Finds the video in the background, then opens it in the YouTube app.
+     */
     private fun youtube(query: String): String? {
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread {
+            val id = try { YouTubeFinder.firstVideoId(query) } catch (e: Exception) { null }
+            main.post {
+                try {
+                    if (id != null) {
+                        val i = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:$id"))
+                            .setPackage("com.google.android.youtube")
+                        try { start(i) } catch (e: ActivityNotFoundException) {
+                            view("https://www.youtube.com/watch?v=$id")
+                        }
+                    } else youtubeSearch(query)
+                } catch (e: Exception) {
+                    try { youtubeSearch(query) } catch (e2: Exception) {}
+                }
+            }
+        }.start()
+        return null
+    }
+
+    private fun youtubeSearch(query: String) {
         try {
             start(Intent(Intent.ACTION_SEARCH).setPackage("com.google.android.youtube").putExtra("query", query))
         } catch (e: ActivityNotFoundException) {
             view("https://www.youtube.com/results?search_query=" + Uri.encode(query))
         }
-        return null
     }
 
     private fun webSearch(query: String): String? {
@@ -298,7 +325,7 @@ class Actions(private val activity: Context) {
         val pkg = when (norm(app)) {
             "spotify" -> "com.spotify.music"
             "youtubemusic", "ytmusic" -> "com.google.android.apps.youtube.music"
-            "youtube" -> return youtube(query)
+            "youtube" -> if (CarAudio.inCar(activity)) "com.google.android.apps.youtube.music" else return youtube(query)
             else -> null
         }
         if (pkg != null) i.setPackage(pkg)
