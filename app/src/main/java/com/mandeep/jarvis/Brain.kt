@@ -42,8 +42,7 @@ class Brain(private val context: Context) {
             val arr = JSONArray(prefs.getString("history", "[]"))
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                val t = o.optString("t")
-                if (t.isNotBlank()) history.add(o.optString("r", "user") to t)
+                history.add(o.getString("r") to o.getString("t"))
             }
         } catch (e: Exception) { history.clear() }
     }
@@ -64,23 +63,12 @@ class Brain(private val context: Context) {
         val contents = JSONArray()
         for ((role, msg) in history) contents.put(Gemini.part(role, msg))
 
-        val system = systemPrompt(punjabiMode, punjabiVoice, phoneInfo)
         val out = try {
-            try {
-                Gemini.generate(context, system, contents, json = true)
-            } catch (e: GeminiException) {
-                if (e.code != 400 || e.message.orEmpty().contains("API key", true)) throw e
-                // Old saved chat is broken → wipe it and ask again with only this message.
-                history.clear()
-                history.add("user" to text)
-                Gemini.generate(context, system, JSONArray().put(Gemini.part("user", text)), json = true)
-            }
+            Gemini.generate(context, systemPrompt(punjabiMode, punjabiVoice, phoneInfo), contents, json = true)
         } catch (e: Exception) {
-            if (history.isNotEmpty()) history.removeAt(history.size - 1)
-            saveHistory()
+            history.removeAt(history.size - 1)
             throw e
         }
-        if (out.isBlank()) { history.removeAt(history.size - 1); saveHistory(); return Reply("", null) }
         history.add("model" to out)
         saveHistory()
         val o = Gemini.parseJson(out) ?: return Reply(out.trim(), null)
@@ -117,7 +105,6 @@ class Brain(private val context: Context) {
         contents.put(JSONObject().put("role", "user").put("parts", parts))
 
         val out = Gemini.generate(context, system, contents, json = false).trim()
-        if (out.isBlank()) return out
         history.add("user" to "[showed a ${file.label}] $q")
         history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())
         while (history.size > 24) history.removeAt(0)
@@ -132,8 +119,7 @@ class Brain(private val context: Context) {
             langRule(punjabiMode, punjabiVoice)
         val contents = JSONArray().put(Gemini.part("user", "REQUEST: $question\n\nDATA:\n$data"))
         val out = Gemini.generate(context, system, contents, json = false).trim()
-        if (out.isNotBlank() && history.lastOrNull()?.first == "user")
-            history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())
+        history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())
         saveHistory()
         return out
     }
@@ -141,9 +127,12 @@ class Brain(private val context: Context) {
     private fun langRule(punjabiMode: Boolean, punjabiVoice: Boolean): String {
         val script = if (punjabiVoice) "write it in Gurmukhi script (ਪੰਜਾਬੀ)"
         else "write it in romanized Punjabi using English letters (e.g. \"Haan ji, kar dita\"), because this phone has no Gurmukhi voice"
-        return "The user speaks Punjabi and English, often mixed. Reply in the language the user used. " +
-            "If they speak Punjabi, $script. If they speak English, reply in English. " +
-            "The microphone is currently set to ${if (punjabiMode) "Punjabi" else "English"}."
+        return if (punjabiMode)
+            "CONVERSATION LANGUAGE: Punjabi (the user chose it). Always reply in Punjabi — $script — even if they mix in English words, " +
+                "until they ask you to talk in English (then use set_language)."
+        else
+            "CONVERSATION LANGUAGE: English (the user chose it). Always reply in English, even if they speak Punjabi, " +
+                "until they ask you to talk in Punjabi (then use set_language)."
     }
 
     private fun systemPrompt(punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String): String {
@@ -165,7 +154,7 @@ OUTPUT: ONLY a JSON object: {"say": "...", "action": {...}, "remember": ["..."],
 "forget": exact MEMORY lines to delete when the user asks you to forget them or a fact changed. Pick the most direct action:
 {"type":"none"}  -> just talking / answering a question
 {"type":"open_app","name":"<app name in English>"}
-{"type":"youtube","query":"..."} -> PLAYS the top YouTube video for this query right away (songs, videos). Use this whenever the user says YouTube / ਯੂਟਿਊਬ, e.g. "Sidhu Moose Wala da gaana YouTube te la de" -> {"type":"youtube","query":"Sidhu Moose Wala song"}
+{"type":"youtube","query":"..."}
 {"type":"web_search","query":"..."}
 {"type":"maps","query":"<place>"}
 {"type":"call","contact":"<contact name in English letters as likely saved, e.g. Mom, Papa, Harpreet>"} or {"type":"call","number":"<digits>"}
@@ -173,6 +162,7 @@ OUTPUT: ONLY a JSON object: {"say": "...", "action": {...}, "remember": ["..."],
 {"type":"whatsapp_to","contact":"...","text":"...","send":true|false} (or "number") -> opens that person's WhatsApp chat directly with the text typed. "send": true when the user says send/bhej/ਭੇਜ; false when they only say write/type/likh/draft. Use "text":"" with send false to just open someone's chat.
 {"type":"play_music","query":"<song / artist>","app":"spotify|youtube music|youtube|"}
 {"type":"navigate","query":"<place>"} -> starts Google Maps directions
+{"type":"set_language","lang":"pa"|"en"} -> when the user says to talk in Punjabi / English from now on ("Punjabi ch gall kar", "talk in English"). Reply already in the NEW language.
 {"type":"alarm","hour":0-23,"minute":0-59,"label":"optional"}
 {"type":"timer","seconds":N}
 {"type":"torch","on":true|false}
@@ -185,6 +175,7 @@ OUTPUT: ONLY a JSON object: {"say": "...", "action": {...}, "remember": ["..."],
 {"type":"settings","page":"wifi|bluetooth|display|sound|battery|main"}
 {"type":"screen_task","app":"<app to open first, e.g. Instagram>","goal":"<short, exact goal in English — only what the user asked>"} -> for ANYTHING else that needs using apps on screen: turning wifi/bluetooth/hotspot/airplane mode on or off, posting, liking, searching inside an app, ordering a ride, reading what is on the screen, replying in a chat app, changing a setting, playing a specific song in Spotify, taking a photo, etc. Jarvis will tap, type and scroll by itself.
 
+TRANSLATING: if the user asks to translate something (a word, sentence or whole paragraph), "say" is the complete translation in the language they asked for (English ↔ Punjabi ↔ Hindi…), nothing else.
 RULES: Do EXACTLY what the user asked — nothing more, nothing less, no extra steps, no questions back when the request is clear. Prefer a direct action over screen_task whenever one fits (it is much faster). If the user said to send, send; if not, don't. Message text: use the user's words as the message (in the language/script they used), without adding greetings or names. Use an action only when the user wants something done; when you act, "say" briefly confirms it (e.g. "Opening YouTube, Sir."). Never use screen_task to pay money, buy things, transfer funds, or delete accounts/data — tell the user to do that part themselves.
 """.trimIndent()
     }

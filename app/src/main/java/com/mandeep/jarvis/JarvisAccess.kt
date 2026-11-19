@@ -115,13 +115,33 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
                     elevation = 16 * d
                     val pad = (16 * d).toInt()
                     setPadding(pad, (12 * d).toInt(), (8 * d).toInt(), (10 * d).toInt())
-                    setOnClickListener {
-                        // tap → open the full app
-                        WakeService.instance?.endSession(false)
-                        startActivity(
-                            android.content.Intent(this@JarvisAccess, MainActivity::class.java)
-                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
+                }
+                // tap = open the full app · swipe down or tap outside = close
+                var downY = 0f
+                var moved = false
+                card.setOnTouchListener { v, ev ->
+                    when (ev.actionMasked) {
+                        android.view.MotionEvent.ACTION_OUTSIDE -> { closeMini(); true }
+                        android.view.MotionEvent.ACTION_DOWN -> { downY = ev.rawY; moved = false; true }
+                        android.view.MotionEvent.ACTION_MOVE -> {
+                            val dy = ev.rawY - downY
+                            if (dy > 8 * d) { moved = true; v.translationY = dy; v.alpha = (1f - dy / (300 * d)).coerceAtLeast(0.2f) }
+                            true
+                        }
+                        android.view.MotionEvent.ACTION_UP -> {
+                            val dy = ev.rawY - downY
+                            if (moved && dy > 70 * d) closeMini()
+                            else if (moved) v.animate().translationY(0f).alpha(1f).setDuration(150).start()
+                            else {
+                                closeMini()
+                                startActivity(
+                                    android.content.Intent(this@JarvisAccess, MainActivity::class.java)
+                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                            true
+                        }
+                        else -> true
                     }
                 }
                 // header: ✦ Singh AI ............ ✕
@@ -136,8 +156,8 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
                 head.addView(GlyphView(this, Glyph.CLOSE, p.muted).apply {
                     glyphScale = 0.4f
                     isClickable = true
-                    setOnClickListener { WakeService.instance?.endSession(true) }
-                }, android.widget.LinearLayout.LayoutParams((36 * d).toInt(), (36 * d).toInt()))
+                    setOnClickListener { closeMini() }
+                }, android.widget.LinearLayout.LayoutParams((44 * d).toInt(), (44 * d).toInt()))
                 card.addView(head)
 
                 val t1 = Ui.text(this, "", 19f, p.text).apply {
@@ -155,7 +175,9 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
                     resources.displayMetrics.widthPixels - (16 * d).toInt(),
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
@@ -177,6 +199,14 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
             miniHint?.text = if (hint.isEmpty()) "Singh AI" else hint
             miniWave?.mode = mode
         }
+    }
+
+    /** ✕ / swipe / tap outside: stop everything and close the popup. */
+    fun closeMini() {
+        stopTask()
+        tts?.stop()
+        val w = WakeService.instance
+        if (w != null) w.endSession(true) else hideMini()
     }
 
     fun miniLevel(level: Float) { main.post { miniWave?.level = level } }
@@ -329,7 +359,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         }
         running = true
         stopRequested = false
-        showPill("Singh AI kamm kar reha… ✕")
+        showPill(if (punjabi) "ਕੰਮ ਸ਼ੁਰੂ ਕਰ ਰਿਹਾ ਹਾਂ…" else "Starting…")
         Thread {
             val result = try {
                 agentLoop(goal, punjabi)
@@ -339,8 +369,9 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
             }
             running = false
             main.post {
-                hidePill()
+                showMini(result, "Singh AI", OrbView.Mode.SPEAKING)
                 speak(result)
+                main.postDelayed({ if (!running) hideMini() }, 4500)
             }
         }.start()
     }
@@ -350,7 +381,8 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         Thread.sleep(600) // let the screen settle after the app goes to the background
         for (step in 1..MAX_STEPS) {
             if (stopRequested) return if (punjabi) "ਠੀਕ ਹੈ, ਰੋਕ ਦਿੱਤਾ।" else "Stopped, Sir."
-            main.post { pill?.text = "Singh AI: step $step… ✕" }
+            val doing = steps.lastOrNull()?.substringAfter(" — ", "")?.takeIf { it.isNotBlank() }
+            showMini(doing ?: "Working…", "Singh AI · step $step · ✕ to stop", OrbView.Mode.THINKING)
 
             val nodes = ArrayList<AccessibilityNodeInfo>()
             val screen = snapshot(nodes)
@@ -414,8 +446,8 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         return """
 You control an Android phone (Samsung Galaxy S26) for the user, one step at a time, to reach the GOAL.
 You see the current screen as a numbered list of elements: [id] Type "text" (description) {flags} @x,y.
-Reply with ONLY one JSON object for the next step:
-{"action":"click","id":N,"note":"why"}
+Reply with ONLY one JSON object for the next step. Every step may include "note": 2-5 words in English saying what you are doing (shown to the user, e.g. "Opening chat", "Typing message"):
+{"action":"click","id":N,"note":"..."}
 {"action":"long_press","id":N}
 {"action":"type","id":N,"text":"..."}   (id = an {edit} field; replaces its text)
 {"action":"scroll","direction":"down|up|left|right"}
@@ -527,50 +559,22 @@ If the goal is already complete, reply "done".
 
     // -------------------------------------------------------- overlay + voice
 
+    /** Task progress now shows inside the bottom Singh AI popup (no separate bar at the top). */
     private fun showPill(text: String) {
-        main.post {
-            if (pill != null) { pill?.text = text; return@post }
-            val wm = getSystemService(WindowManager::class.java) ?: return@post
-            val v = TextView(this).apply {
-                this.text = text
-                setTextColor(Color.parseColor("#05080D"))
-                setBackgroundColor(Color.parseColor("#3FE0FF"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                val pad = (10 * resources.displayMetrics.density).toInt()
-                setPadding(pad * 2, pad, pad * 2, pad)
-                setOnClickListener { stopRequested = true; this.text = "Rok reha haan…" }
-            }
-            val lp = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = (40 * resources.displayMetrics.density).toInt()
-            }
-            try { wm.addView(v, lp); pill = v } catch (e: Exception) { pill = null }
-        }
+        showMini(text, "Singh AI · working", OrbView.Mode.THINKING)
     }
 
-    private fun hidePill() {
-        val v = pill ?: return
-        pill = null
-        main.post {
-            try { getSystemService(WindowManager::class.java)?.removeView(v) } catch (e: Exception) {}
-        }
+    private fun hidePill() {}
+
+    /** Stops a running screen task (✕ on the popup). */
+    fun stopTask() {
+        if (running) stopRequested = true
     }
 
     private fun speak(text: String) {
         val t = tts ?: return
         if (!ttsReady || text.isBlank()) return
-        val locale = when {
-            text.any { it in '਀'..'੿' } && punjabiVoice -> Locale("pa", "IN")
-            text.any { it in 'ऀ'..'ॿ' } -> Locale("hi", "IN")
-            else -> Locale("en", "IN")
-        }
-        t.setLanguage(locale)
+        VoiceSettings.apply(this, t, text, punjabiVoice)
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "agent-" + System.currentTimeMillis())
     }
 

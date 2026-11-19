@@ -53,7 +53,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var langBtn: TextView
     private lateinit var mic: MicButton
     private lateinit var sendBtn: GlyphView
-    private lateinit var glow: View
+    private lateinit var glow: GlowView
+    private lateinit var hero: LinearLayout
+    private lateinit var greeting: TextView
+    private lateinit var liveWave: WaveBar
     private lateinit var p: Ui.Palette
     private var uiSignature = ""
 
@@ -111,13 +114,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         // Tell the user (on screen) when Gemini is busy and Jarvis is retrying.
         Gemini.onRetry = { attempt, fallback ->
             runOnUiThread {
-                val msg = if (punjabi) {
-                    if (fallback) "ਸਰਵਰ ਬਿਜ਼ੀ ਹੈ, ਬੈਕਅੱਪ ਮਾਡਲ ਨਾਲ ਕੋਸ਼ਿਸ਼ ਕਰ ਰਿਹਾ ਹਾਂ..."
-                    else "ਸਰਵਰ ਬਿਜ਼ੀ ਹੈ, ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰ ਰਿਹਾ ਹਾਂ... ($attempt/3)"
-                } else {
-                    if (fallback) "Server busy — trying the backup model…"
+                val msg = if (fallback) "Server busy — trying the backup model…"
                     else "Server busy — retrying… ($attempt/3)"
-                }
                 if (busy) {
                     setStatus(msg)
                     thinkingBubble?.text = msg
@@ -156,7 +154,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         messages.clear()
         liveUserBubble = null
         thinkingAnim?.cancel(); thinkingAnim = null; thinkingBubble = null
-        if (::chat.isInitialized) chat.removeAllViews()
+        if (::chat.isInitialized) { chat.removeAllViews(); updateHero() }
         attachment = null
         refreshAttachChip()
     }
@@ -238,18 +236,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val root = FrameLayout(this).apply { setBackgroundColor(p.bg) }
 
         // Gemini Live-style glow rising from the bottom while listening / speaking
-        glow = View(this).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(
-                    withAlpha(Ui.GEMINI_PURPLE, if (p.dark) 110 else 70),
-                    withAlpha(Ui.GEMINI_BLUE, if (p.dark) 45 else 30),
-                    Color.TRANSPARENT
-                )
-            )
-            alpha = 0f
-        }
-        root.addView(glow, FrameLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.5f).toInt(), Gravity.BOTTOM))
+        glow = GlowView(this).apply { dark = p.dark }
+        root.addView(glow, FrameLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.45f).toInt(), Gravity.BOTTOM))
 
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -257,43 +245,54 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         root.addView(col, FrameLayout.LayoutParams(-1, -1))
 
-        // ---- top bar: language chip · Jarvis · settings
+        // ---- top bar: (new chat)   Singh AI   [language] (settings)
         val top = FrameLayout(this)
-        langBtn = Ui.text(this, "", 14f, p.text, Ui.medium).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(14), 0, dp(14), 0)
-            background = Ui.pressable(
-                Ui.rounded(p.surface, dp(18).toFloat()),
-                Ui.rounded(p.surface2, dp(18).toFloat())
-            )
+        val newChat = GlyphView(this, Glyph.CHAT, p.text).apply {
+            glyphScale = 0.5f
+            isClickable = true
+            contentDescription = "New chat"
             setOnClickListener {
-                punjabi = !punjabi
-                updateLangButton()
-                setStatus(idleText())
+                newConversation()
+                toast("New chat")
             }
         }
-        top.addView(langBtn, FrameLayout.LayoutParams(-2, dp(36), Gravity.START or Gravity.CENTER_VERTICAL))
+        top.addView(newChat, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.START or Gravity.CENTER_VERTICAL))
 
         val title = GradientText(this).apply {
             text = "Singh AI"
-            letterSpacing = 0.02f
-            textSize = 24f
+            textSize = 20f
             typeface = Ui.medium
             gravity = Gravity.CENTER
         }
         top.addView(title, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-        // keep the side buttons clickable above the centered title
-        langBtn.bringToFront()
 
+        val right = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        langBtn = Ui.text(this, "", 13f, p.text, Ui.medium).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), 0, dp(12), 0)
+            background = Ui.pressable(
+                Ui.rounded(p.surface, dp(16).toFloat()),
+                Ui.rounded(p.surface2, dp(16).toFloat())
+            )
+            contentDescription = "Conversation language"
+            setOnClickListener {
+                punjabi = !punjabi
+                updateLangButton()
+                setStatus(if (punjabi) "Talking in Punjabi" else "Talking in English")
+            }
+        }
+        right.addView(langBtn, LinearLayout.LayoutParams(-2, dp(32)).apply { marginEnd = dp(6) })
         val gear = GlyphView(this, Glyph.GEAR, p.text).apply {
-            bgColor = p.surface
-            circleBg = true
-            glyphScale = 0.48f
+            glyphScale = 0.5f
             isClickable = true
             contentDescription = "Settings"
             setOnClickListener { openSettings(null) }
         }
-        top.addView(gear, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.END or Gravity.CENTER_VERTICAL))
+        right.addView(gear, LinearLayout.LayoutParams(dp(44), dp(44)))
+        top.addView(right, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
         col.addView(top, LinearLayout.LayoutParams(-1, dp(56)))
 
         status = Ui.text(this, oldStatus, 14f, p.muted).apply {
@@ -302,22 +301,25 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         col.addView(status, LinearLayout.LayoutParams(-1, -2))
 
-        // ---- the orb
+        // ---- middle: welcome screen (orb + "What's next?") or the chat
+        val middle = FrameLayout(this)
+        hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+        }
         orb = OrbView(this).apply {
             dark = p.dark
             contentDescription = "Tap to talk"
             setOnClickListener { if (listening) stopListening() else startListening() }
-            setOnLongClickListener {
-                brain.clearHistory()
-                messages.clear()
-                chat.removeAllViews()
-                toast(if (punjabi) "ਨਵੀਂ ਗੱਲਬਾਤ" else "New conversation")
-                true
-            }
         }
-        col.addView(orb, LinearLayout.LayoutParams(-1, 0, 1f))
+        hero.addView(orb, LinearLayout.LayoutParams(dp(200), dp(200)))
+        greeting = Ui.text(this, "", 30f, p.text, Ui.regular).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(4), dp(8), 0)
+        }
+        hero.addView(greeting, LinearLayout.LayoutParams(-1, -2))
+        middle.addView(hero, FrameLayout.LayoutParams(-1, -1))
 
-        // ---- chat bubbles
         scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             isVerticalFadingEdgeEnabled = true
@@ -329,7 +331,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setPadding(0, dp(8), 0, dp(8))
         }
         scroll.addView(chat, ViewGroup.LayoutParams(-1, -2))
-        col.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1.15f))
+        middle.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        col.addView(middle, LinearLayout.LayoutParams(-1, 0, 1f))
 
         // ---- attachment chip (shows the photo / screenshot / file you're asking about)
         attachChip = LinearLayout(this).apply {
@@ -384,7 +387,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             elevation = if (p.dark) 0f else dp(2).toFloat()
         }
         input = EditText(this).apply {
-            hint = if (punjabi) "Singh AI nu puchho…" else "Ask Singh AI…"
+            hint = "Ask Singh AI"
             background = null
             textSize = 16f
             setTextColor(p.text)
@@ -399,6 +402,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         }
         pill.addView(input, LinearLayout.LayoutParams(0, -1, 1f))
+        // while listening / speaking the text box turns into a flowing voice bar
+        liveWave = WaveBar(this).apply {
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { if (listening) stopListening() else tts?.stop() }
+        }
+        pill.addView(liveWave, LinearLayout.LayoutParams(0, -1, 1f))
         sendBtn = GlyphView(this, Glyph.SEND, Color.WHITE).apply {
             bgColor = p.accent
             circleBg = true
@@ -432,6 +442,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         // restore the conversation (no animation)
         for (m in messages) addBubbleView(m.user, m.text, animate = false)
+        updateHero(animate = false)
         updateLangButton()
         setMode(mode)
         if (busy) showThinking()
@@ -456,14 +467,42 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         mode = m
         if (!::orb.isInitialized) return
         orb.mode = m
+        glow.mode = m
         mic.active = m == OrbView.Mode.LISTENING
-        val target = when (m) {
-            OrbView.Mode.LISTENING -> 1f
-            OrbView.Mode.SPEAKING -> 0.8f
-            OrbView.Mode.THINKING -> 0.45f
-            OrbView.Mode.IDLE -> 0f
+        val live = m == OrbView.Mode.LISTENING || m == OrbView.Mode.SPEAKING
+        liveWave.mode = m
+        if (live && liveWave.visibility != View.VISIBLE) {
+            input.visibility = View.GONE
+            liveWave.alpha = 0f
+            liveWave.visibility = View.VISIBLE
+            liveWave.animate().alpha(1f).setDuration(200).start()
+        } else if (!live && liveWave.visibility == View.VISIBLE) {
+            liveWave.visibility = View.GONE
+            input.visibility = View.VISIBLE
         }
-        glow.animate().alpha(target).setDuration(450).start()
+    }
+
+    /** Welcome screen when the chat is empty, chat when there are messages. */
+    private fun updateHero(animate: Boolean = true) {
+        if (!::hero.isInitialized) return
+        val empty = chat.childCount == 0
+        greeting.text = greetingText()
+        if (empty && hero.visibility != View.VISIBLE) {
+            hero.visibility = View.VISIBLE
+            if (animate) { hero.alpha = 0f; hero.animate().alpha(1f).setDuration(300).start() }
+        } else if (!empty && hero.visibility == View.VISIBLE) {
+            if (animate) hero.animate().alpha(0f).setDuration(200).withEndAction { hero.visibility = View.GONE; hero.alpha = 1f }.start()
+            else hero.visibility = View.GONE
+        }
+    }
+
+    private fun greetingText(): String {
+        val name = Memory.all(this).firstNotNullOfOrNull { f ->
+            Regex("name is ([\\p{L}]+)", RegexOption.IGNORE_CASE).find(f)
+                ?.takeIf { f.contains("user", true) && !f.contains("mother", true) && !f.contains("wife", true) }
+                ?.groupValues?.get(1)
+        }
+        return if (name != null) "What's next,\n$name?" else "What's next?"
     }
 
     // ---------------------------------------------------------------- bubbles
@@ -500,6 +539,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             topMargin = dp(8)
         }
         chat.addView(rowView, lp)
+        updateHero()
         if (animate) {
             rowView.alpha = 0f
             rowView.translationY = dp(14).toFloat()
@@ -542,6 +582,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         thinkingBubble = null
         val row = tv.parent as? View ?: return
         (row.parent as? ViewGroup)?.removeView(row)
+        updateHero()
     }
 
     /** Shows what the mic is hearing in a user bubble that updates live. */
@@ -564,6 +605,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val b = liveUserBubble ?: return
         liveUserBubble = null
         chat.removeView(b)
+        updateHero()
     }
 
     // ================================================================ voice out
@@ -571,7 +613,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onInit(result: Int) {
         val engine = tts ?: return
         if (result != TextToSpeech.SUCCESS) {
-            setStatus("Voice engine nahi chaliya")
+            setStatus("Voice engine didn't start")
             return
         }
         ttsReady = true
@@ -613,16 +655,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setStatus(idleText())
             return
         }
-        val locale = when {
-            text.any { it in '਀'..'੿' } && punjabiVoice -> Locale("pa", "IN")
-            text.any { it in 'ऀ'..'ॿ' } -> Locale("hi", "IN")
-            else -> Locale("en", "IN")
-        }
-        engine.setLanguage(locale)
-        engine.setSpeechRate(voiceSpeed)
+        VoiceSettings.apply(this, engine, text, punjabiVoice)
         listenAfterSpeech = listenAfter
         engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-" + System.currentTimeMillis())
-        setStatus(if (punjabi) "ਬੋਲ ਰਿਹਾ ਹਾਂ…" else "Speaking…")
+        setStatus("Speaking…")
     }
 
     private fun afterSpeaking() {
@@ -666,7 +702,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
         listening = true
         setMode(OrbView.Mode.LISTENING)
-        setStatus(if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ… ਬੋਲੋ" else "Listening…")
+        setStatus("Listening…")
         rec.startListening(i)
     }
 
@@ -681,6 +717,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         override fun onRmsChanged(rmsdB: Float) {
             val lvl = (rmsdB + 2f) / 12f
             orb.level = lvl
+            glow.level = lvl
+            liveWave.level = lvl
             mic.level = lvl.coerceIn(0f, 1f)
         }
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -694,12 +732,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             dropLiveText()
             val msg = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                    if (punjabi) "ਕੁਝ ਸੁਣਿਆ ਨਹੀਂ — ਦੁਬਾਰਾ ਛੂਹੋ" else "Didn't catch that — tap again"
+                    "Didn't catch that — tap again"
                 SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                    if (punjabi) "ਇੰਟਰਨੈੱਟ ਚੈੱਕ ਕਰੋ" else "Check the internet"
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Mic di permission deo"
+                    "Check the internet"
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Please allow the microphone"
                 12, 13 -> // language not supported / unavailable
-                    "Eh bhasha phone te nahi: ${langBtn.text} badal ke dekho"
+                    "This language isn't on the phone — switch ${langBtn.text}"
                 else -> idleText()
             }
             setStatus(msg)
@@ -741,13 +779,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         busy = true
         val file = attachment
         val shown = if (file != null) {
-            val q = text.ifBlank { if (punjabi) "ਇਸ ਵਿੱਚ ਕੀ ਹੈ?" else "What is this?" }
+            val q = text.ifBlank { "What is this?" }
             (if (file.mime.startsWith("image/")) "🖼  " else "📄  ") + q
         } else text
         finishUserText(shown)
         showThinking()
         setMode(OrbView.Mode.THINKING)
-        setStatus(if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…")
+        setStatus("Thinking…")
         val pa = punjabi
         val paVoice = punjabiVoice
         val info = phoneInfo()
@@ -780,12 +818,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         say(if (pa) "ਭੇਜ ਦਿਆਂ?" else "Shall I send it?", listenAfter = false)
         AlertDialog.Builder(this, Ui.dialogTheme(this))
-            .setTitle(if (pa) "ਭੇਜਣਾ ਹੈ?" else "Send this?")
+            .setTitle("Send this?")
             .setMessage(question)
-            .setPositiveButton(if (pa) "ਹਾਂ, ਭੇਜੋ" else "Yes, send") { _, _ ->
+            .setPositiveButton("Yes, send") { _, _ ->
                 complete(userText, result, actions.run(action, pa, confirmed = true), pa, paVoice, fromVoice)
             }
-            .setNegativeButton(if (pa) "ਨਹੀਂ" else "No") { _, _ ->
+            .setNegativeButton("No") { _, _ ->
                 say(if (pa) "ਠੀਕ ਹੈ, ਨਹੀਂ ਭੇਜਿਆ।" else "Okay, not sent.", listenAfter = false)
             }
             .setCancelable(false)
@@ -810,7 +848,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 busy = true
                 showThinking()
                 setMode(OrbView.Mode.THINKING)
-                setStatus(if (pa) "ਪੜ੍ਹ ਰਿਹਾ ਹਾਂ…" else "Reading…")
+                setStatus("Reading…")
                 Thread {
                     val answer = try {
                         brain.summarize(userText, data, pa, paVoice)
@@ -886,8 +924,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         refreshAttachChip()
         if (a != null) {
             setStatus(
-                if (punjabi) "ਹੁਣ ਪੁੱਛੋ — ਜਿਵੇਂ \"ਕੀ ਲਿਖਿਆ?\", \"ਪੰਜਾਬੀ ਵਿੱਚ ਦੱਸੋ\", \"ਇਹ ਕੀ ਹੈ?\""
-                else "Now ask — e.g. \"read it\", \"translate to Punjabi\", \"what is this?\""
+                "Now ask — e.g. \"read it\", \"translate to Punjabi\", \"what is this?\""
             )
         }
     }
@@ -903,10 +940,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         attachChip.visibility = View.VISIBLE
         if (a.thumb != null) attachThumb.setImageBitmap(a.thumb) else attachThumb.setImageDrawable(null)
         attachLabel.text = when {
-            a.label == "screenshot" -> if (punjabi) "ਸਕਰੀਨ" else "Screen"
+            a.label == "screenshot" -> "Screen"
             a.mime == "application/pdf" -> "PDF"
-            a.mime.startsWith("image/") -> if (punjabi) "ਫ਼ੋਟੋ" else "Photo"
-            else -> if (punjabi) "ਫ਼ਾਈਲ" else "File"
+            a.mime.startsWith("image/") -> "Photo"
+            else -> "File"
         }
         showSend(true)
     }
@@ -950,14 +987,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             row.addView(t, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
         }
         val pa = punjabi
-        tile(Glyph.CAMERA, if (pa) "ਕੈਮਰਾ" else "Camera") { openCamera() }
-        tile(Glyph.IMAGE, if (pa) "ਫ਼ੋਟੋ" else "Photos") { pickPhoto() }
-        tile(Glyph.SCREEN, if (pa) "ਸਕਰੀਨ" else "Screen") { shareScreen() }
-        tile(Glyph.FILE, if (pa) "ਫ਼ਾਈਲ" else "Files") { pickFile() }
+        tile(Glyph.CAMERA, "Camera") { openCamera() }
+        tile(Glyph.IMAGE, "Photos") { pickPhoto() }
+        tile(Glyph.SCREEN, "Screen") { shareScreen() }
+        tile(Glyph.FILE, "Files") { pickFile() }
         box.addView(row)
         box.addView(Ui.text(this,
-            if (pa) "ਫ਼ੋਟੋ ਜਾਂ ਸਕਰੀਨ ਦਿਖਾ ਕੇ ਪੁੱਛੋ: ਪੜ੍ਹ ਕੇ ਦੱਸੋ, ਟਰਾਂਸਲੇਟ ਕਰੋ, ਇਹ ਕੀ ਹੈ…"
-            else "Show a photo or your screen and ask: read it, translate it, what is this…",
+            "Show a photo or your screen and ask: read it, translate it, what is this…",
             13f, p.muted).apply { gravity = Gravity.CENTER; setPadding(dp(8), dp(16), dp(8), 0) })
 
         d.setContentView(box)
@@ -989,7 +1025,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         try {
             startActivityForResult(i, REQ_CAMERA)
         } catch (e: Exception) {
-            toast(if (punjabi) "ਕੈਮਰਾ ਨਹੀਂ ਖੁੱਲ੍ਹਿਆ" else "Couldn't open the camera")
+            toast("Couldn't open the camera")
         }
     }
 
@@ -1007,7 +1043,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .setType("*/*")
             .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "application/pdf", "text/plain"))
         try { startActivityForResult(i, REQ_FILE) } catch (e: Exception) {
-            toast(if (punjabi) "ਫ਼ਾਈਲਾਂ ਨਹੀਂ ਖੁੱਲ੍ਹੀਆਂ" else "Couldn't open files")
+            toast("Couldn't open files")
         }
     }
 
@@ -1016,20 +1052,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val svc = JarvisAccess.instance
         if (svc == null) {
             AlertDialog.Builder(this, Ui.dialogTheme(this))
-                .setTitle(if (punjabi) "ਸਕਰੀਨ ਕੰਟਰੋਲ ਚਾਲੂ ਕਰੋ" else "Turn on Screen Control")
+                .setTitle("Turn on Screen Control")
                 .setMessage(
-                    if (punjabi) "ਸਕਰੀਨ ਦਿਖਾਉਣ ਲਈ Singh AI ਨੂੰ Screen Control ਚਾਹੀਦਾ ਹੈ। Installed apps → Singh AI screen control → ON."
-                    else "To see your screen, Singh AI needs Screen Control. Installed apps → Singh AI screen control → ON."
+                    "To see your screen, Singh AI needs Screen Control. Installed apps → Singh AI screen control → ON."
                 )
                 .setPositiveButton("OK") { _, _ -> openAccessibility() }
-                .setNegativeButton(if (punjabi) "ਰਹਿਣ ਦਿਓ" else "Cancel", null)
+                .setNegativeButton("Cancel", null)
                 .show()
             return
         }
         svc.startScreenShare(punjabi)
         toast(
-            if (punjabi) "ਜਿਹੜੀ ਸਕਰੀਨ ਦਿਖਾਉਣੀ ਹੈ ਉੱਥੇ ਜਾਓ, ਫਿਰ ਨੀਲਾ ਬਟਨ ਦਬਾਓ"
-            else "Go to the screen you want, then tap the floating button"
+            "Go to the screen you want, then tap the floating button"
         )
         moveTaskToBack(true)
     }
@@ -1040,7 +1074,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val path = i.getStringExtra(EXTRA_SCREENSHOT).orEmpty()
         i.removeExtra(EXTRA_SCREENSHOT)
         if (path.isEmpty()) {
-            toast(if (punjabi) "ਸਕਰੀਨ ਦੀ ਫ਼ੋਟੋ ਨਹੀਂ ਲੈ ਸਕਿਆ" else "Couldn't capture the screen")
+            toast("Couldn't capture the screen")
             return
         }
         Thread {
@@ -1079,19 +1113,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             } catch (e: Exception) { null }
             runOnUiThread {
                 if (a != null) setAttachment(a)
-                else toast(if (punjabi) "ਇਹ ਫ਼ਾਈਲ ਨਹੀਂ ਪੜ੍ਹ ਸਕਿਆ (8MB ਤੋਂ ਛੋਟੀ ਹੋਵੇ)" else "Couldn't read that (max 8 MB)")
+                else toast("Couldn't read that (max 8 MB)")
             }
         }.start()
     }
 
     private fun updateLangButton() {
         if (!::langBtn.isInitialized) return
-        langBtn.text = if (punjabi) "ਪੰਜਾਬੀ" else "EN"
-        input.hint = if (punjabi) "Singh AI nu puchho…" else "Ask Singh AI…"
+        langBtn.text = if (punjabi) "Punjabi" else "English"
+        input.hint = "Ask Singh AI…"
     }
 
-    private fun idleText() =
-        if (punjabi) "ਗੋਲੇ ਨੂੰ ਛੂਹੋ ਜਾਂ ਮਾਈਕ ਦਬਾ ਕੇ ਬੋਲੋ" else "Tap the orb or the mic and speak"
+    private fun idleText() = ""
 
     private fun setStatus(s: String) {
         status.text = s
@@ -1106,7 +1139,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 WakeService.start(this)
                 startListening()
             }
-            else setStatus("Mic di permission bina main sun nahi sakda")
+            else setStatus("I can't hear you without microphone permission")
         }
     }
 

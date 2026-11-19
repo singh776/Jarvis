@@ -49,6 +49,10 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     private var listeningNow = false
     private var commandMisses = 0
 
+    /** Changes every time a popup opens or closes, so late answers from an old session are ignored. */
+    @Volatile private var session = 0
+    private var lastActivity = 0L
+
     private val punjabi get() = prefs.getBoolean("punjabi", true)
 
     private val screenReceiver = object : BroadcastReceiver() {
@@ -143,7 +147,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         val n: Notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("Singh AI")
-            .setContentText(if (punjabi) "\"Singh AI\" ਕਹੋ ਤੇ ਬੋਲੋ" else "Say \"Singh AI\" and speak")
+            .setContentText("Say \"Singh AI\" and speak")
             .setContentIntent(open)
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .setOngoing(true)
@@ -188,6 +192,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
 
     private fun beginSession() {
         if (JarvisAccess.instance == null) return
+        session++
         main.removeCallbacksAndMessages(WAKE_TOKEN)
         stopRecognizer()
         tts?.stop()
@@ -238,20 +243,15 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         JarvisAccess.instance?.showMini(
-            if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ… ਬੋਲੋ" else "Listening… go ahead",
+            "Listening… go ahead",
             "Singh AI", OrbView.Mode.LISTENING
         )
-        CarAudio.showOnCar("Singh AI", if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ… ਬੋਲੋ" else "Listening… go ahead")
-        val start = Runnable {
-            try {
-                listeningNow = true
-                rec.startListening(i)
-            } catch (e: Exception) {
-                endSession(true)
-            }
+        try {
+            listeningNow = true
+            rec.startListening(i)
+        } catch (e: Exception) {
+            endSession(true)
         }
-        // In Android Auto: use the truck's microphone (Bluetooth needs a moment to switch over)
-        if (CarAudio.micOn(this)) main.postDelayed(start, 700) else start.run()
     }
 
     private fun restartSoon(ms: Long) {
@@ -268,7 +268,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {
             if (state == State.COMMAND) JarvisAccess.instance?.showMini(
-                if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…", "", OrbView.Mode.THINKING
+                "Thinking…", "", OrbView.Mode.THINKING
             )
         }
 
@@ -290,14 +290,6 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                     restartSoon(wait)
                 }
                 State.COMMAND -> {
-                    if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT &&
-                        CarAudio.isCarMicOn()
-                    ) {
-                        // truck mic didn't work → try again with the phone mic
-                        CarAudio.carMicFailed(this@WakeService)
-                        main.postDelayed({ if (state == State.COMMAND) listenForCommand() }, 300)
-                        return
-                    }
                     if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && commandMisses == 0) {
                         commandMisses++
                         main.postDelayed({ if (state == State.COMMAND) listenForCommand() }, 200)
@@ -360,6 +352,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             return
         }
         commandMisses = 0
+        session++
         // each popup session starts a fresh chat (long-term memory stays)
         brain.clearHistory()
         if (rest.split(" ").count { it.isNotBlank() } >= 2) handle(rest) else listenForCommand()
@@ -370,11 +363,17 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     private fun handle(text: String) {
         state = State.BUSY
         stopRecognizer()
-        CarAudio.micOff(this)
-        CarAudio.showOnCar(text, if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…")
+        val my = session
+        lastActivity = System.currentTimeMillis()
         val pa = punjabi
+        // instant path: "open X" opens right away, no waiting for the AI
+        val quick = try { Actions(JarvisAccess.instance ?: this).quickOpen(text, pa) } catch (e: Exception) { null }
+        if (quick != null) {
+            speak(quick, again = false, hideAfter = true)
+            return
+        }
         val acc = JarvisAccess.instance
-        acc?.showMini(text, if (pa) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…", OrbView.Mode.THINKING)
+        acc?.showMini(text, "Thinking…", OrbView.Mode.THINKING)
         Thread {
             var failed = false
             val reply: Reply = try {
@@ -383,8 +382,19 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
                 failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
             }
-            main.post { act(text, reply, pa, failed) }
+            main.post { if (my == session && state == State.BUSY) act(text, reply, pa, failed) }
         }.start()
+        watchdog(my)
+    }
+
+    /** Never leave the popup stuck: close it if nothing happens for a while. */
+    private fun watchdog(my: Int) {
+        main.postDelayed({
+            if (my == session && state == State.BUSY && tts?.isSpeaking != true &&
+                System.currentTimeMillis() - lastActivity > 20_000) {
+                speak("Sorry, that took too long. Please try again.", again = false, hideAfter = true)
+            } else if (my == session && state == State.BUSY) watchdog(my)
+        }, 22_000)
     }
 
     private fun act(userText: String, reply: Reply, pa: Boolean, failed: Boolean) {
@@ -393,21 +403,31 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         val type = reply.action?.optString("type", "none") ?: "none"
         when {
             !res.task.isNullOrBlank() -> {
-                speak(reply.say.ifBlank { if (pa) "ਹੁਣੇ ਕਰਦਾ ਹਾਂ।" else "On it, Sir." }, again = false, hideAfter = true)
+                // say "on it" right away; the step-by-step progress then shows in this same popup
+                val ack = reply.say.ifBlank { if (pa) "ਹੁਣੇ ਕਰਦਾ ਹਾਂ।" else "On it, Sir." }
+                val t = tts
+                if (ttsReady && t != null) {
+                    voiceFor(t, ack)
+                    t.speak(ack, TextToSpeech.QUEUE_FLUSH, null, "ack")
+                }
+                state = State.WAKE // the screen-control task owns the popup now
+                session++
                 JarvisAccess.instance?.runTask(res.task, pa)
+                restartSoon(1500)
             }
             res.pressSend -> {
                 JarvisAccess.instance?.pressSendSoon(pa)
                 finishSoon(reply.say.ifBlank { if (pa) "ਭੇਜ ਰਿਹਾ ਹਾਂ…" else "Sending…" })
             }
             res.followUp != null -> {
-                JarvisAccess.instance?.showMini(if (pa) "ਪੜ੍ਹ ਰਿਹਾ ਹਾਂ…" else "Reading…", "", OrbView.Mode.THINKING)
+                JarvisAccess.instance?.showMini("Reading…", "", OrbView.Mode.THINKING)
                 val data = res.followUp ?: ""
+                val my = session
                 Thread {
                     val answer = try { brain.summarize(userText, data, pa, punjabiVoice) } catch (e: Exception) {
                         Gemini.friendlyError(e, pa)
                     }
-                    main.post { speak(answer, again = false, hideAfter = true) }
+                    main.post { if (my == session && state == State.BUSY) speak(answer, again = false, hideAfter = true) }
                 }.start()
             }
             else -> {
@@ -425,22 +445,20 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     private fun speak(text: String, again: Boolean, hideAfter: Boolean) {
         listenAfter = again
         hideAfterSpeech = hideAfter
+        lastActivity = System.currentTimeMillis()
         JarvisAccess.instance?.showMini(text, "Singh AI", OrbView.Mode.SPEAKING)
-        CarAudio.showOnCar("Singh AI", text)
         val t = tts
         if (!ttsReady || t == null) { afterSpeaking(null); return }
-        val locale = when {
-            text.any { it in '਀'..'੿' } && punjabiVoice -> Locale("pa", "IN")
-            text.any { it in 'ऀ'..'ॿ' } -> Locale("hi", "IN")
-            else -> Locale("en", "IN")
-        }
-        t.setLanguage(locale)
-        t.setSpeechRate(prefs.getFloat("voice_speed", 1.0f))
-        t.setAudioAttributes(CarAudio.voiceAttributes(this)) // car → truck speakers
+        voiceFor(t, text)
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "wake-" + System.currentTimeMillis())
     }
 
-    private fun afterSpeaking(@Suppress("UNUSED_PARAMETER") id: String?) {
+    private fun voiceFor(t: TextToSpeech, text: String) {
+        VoiceSettings.apply(this, t, text, punjabiVoice)
+    }
+
+    private fun afterSpeaking(id: String?) {
+        if (id == "ack") return
         if (state != State.BUSY) return
         if (listenAfter) {
             commandMisses = 0
@@ -457,7 +475,8 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
 
     /** Closes the popup and goes back to waiting for "Singh AI". */
     fun endSession(@Suppress("UNUSED_PARAMETER") hide: Boolean) {
-        CarAudio.micOff(this)
+        session++
+        JarvisAccess.instance?.stopTask()
         JarvisAccess.instance?.hideMini()
         tts?.stop()
         stopRecognizer()

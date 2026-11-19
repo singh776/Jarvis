@@ -48,10 +48,7 @@ class Actions(private val activity: Context) {
         return try {
             when (action.optString("type", "none")) {
                 "open_app" -> msg(openApp(action.optString("name"), pa))
-                "youtube" -> msg(
-                    if (CarAudio.inCar(activity)) playMusic(action.optString("query"), "youtube music")
-                    else youtube(action.optString("query"))
-                )
+                "youtube" -> msg(youtube(action.optString("query")))
                 "web_search" -> msg(webSearch(action.optString("query")))
                 "maps" -> msg(view("geo:0,0?q=" + Uri.encode(action.optString("query"))))
                 "dial", "call" -> msg(call(action, pa))
@@ -69,6 +66,11 @@ class Actions(private val activity: Context) {
                 "read_notifications" -> notifications(pa)
                 "settings" -> msg(settings(action.optString("page", "main")))
                 "screen_task" -> screenTask(action)
+                "set_language" -> {
+                    val toPa = action.optString("lang").lowercase(Locale.ROOT).startsWith("pa")
+                    activity.getSharedPreferences("jarvis", Context.MODE_PRIVATE).edit().putBoolean("punjabi", toPa).apply()
+                    ActionResult()
+                }
                 "play_music" -> msg(playMusic(action.optString("query"), action.optString("app")))
                 "navigate" -> msg(navigate(action.optString("query")))
                 else -> ActionResult()
@@ -123,36 +125,61 @@ class Actions(private val activity: Context) {
     private fun norm(s: String) = s.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
     /**
-     * Plays the top YouTube video for [query] straight away (not just the search page).
-     * Finds the video in the background, then opens it in the YouTube app.
+     * Instant path for "open X" / "X ਖੋਲ੍ਹ" — opens the app right away without asking the AI.
+     * Returns what to say, or null when the sentence isn't a plain "open app" request.
      */
-    private fun youtube(query: String): String? {
-        val main = android.os.Handler(android.os.Looper.getMainLooper())
-        Thread {
-            val id = try { YouTubeFinder.firstVideoId(query) } catch (e: Exception) { null }
-            main.post {
-                try {
-                    if (id != null) {
-                        val i = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:$id"))
-                            .setPackage("com.google.android.youtube")
-                        try { start(i) } catch (e: ActivityNotFoundException) {
-                            view("https://www.youtube.com/watch?v=$id")
-                        }
-                    } else youtubeSearch(query)
-                } catch (e: Exception) {
-                    try { youtubeSearch(query) } catch (e2: Exception) {}
-                }
-            }
-        }.start()
-        return null
+    fun quickOpen(text: String, pa: Boolean): String? {
+        var t = " " + text.lowercase(Locale.ROOT).replace(Regex("[.,!?।]"), " ") + " "
+        val verbs = listOf(
+            "open", "launch", "start", "kholo", "khol de", "kholde", "khol", "chalao", "chala",
+            "ਖੋਲ੍ਹ ਦੇ", "ਖੋਲ੍ਹੋ", "ਖੋਲ੍ਹ", "ਖੋਲੋ", "ਖੋਲ", "ਚਲਾਓ", "ਚਲਾ", "खोल दो", "खोल दे", "खोलो", "खोल", "चलाओ"
+        )
+        val verb = verbs.firstOrNull { t.contains(" $it ") } ?: return null
+        t = t.replace(" $verb ", " ")
+        for (f in listOf("app", "ਐਪ", "ऐप", "एप", "please", "ji", "ਜੀ", "जी", "the", "nu", "ਨੂੰ", "को", "de", "ਦੇ", "do", "my", "mera", "ਮੇਰਾ", "singh", "ai", "ਸਿੰਘ"))
+            t = t.replace(" $f ", " ")
+        var name = t.trim().replace(Regex("\\s+"), " ")
+        if (name.isEmpty() || name.split(" ").size > 3) return null
+        name = ALIASES[name] ?: ALIASES[name.replace(" ", "")] ?: name
+        val wanted = norm(name)
+        if (wanted.length < 2) return null
+        val pm = activity.packageManager
+        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), PackageManager.MATCH_ALL)
+            .map { it.activityInfo.packageName to norm(it.loadLabel(pm).toString()) }
+        val best = apps.firstOrNull { it.second == wanted }
+            ?: apps.firstOrNull { it.second.startsWith(wanted) }
+            ?: apps.firstOrNull { wanted.length >= 4 && it.second.contains(wanted) }
+            ?: return null
+        val i = pm.getLaunchIntentForPackage(best.first) ?: return null
+        start(i)
+        return p(pa, "ਖੋਲ੍ਹ ਰਿਹਾ ਹਾਂ।", "Opening it.")
     }
 
-    private fun youtubeSearch(query: String) {
+    companion object {
+        /** Spoken app names (Punjabi / Hindi script) → the app's English name. */
+        private val ALIASES = mapOf(
+            "ਯੂਟਿਊਬ" to "youtube", "ਯੂ ਟਿਊਬ" to "youtube", "यूट्यूब" to "youtube",
+            "ਵਟਸਐਪ" to "whatsapp", "ਵਹਟਸਐਪ" to "whatsapp", "ਵਟਸ ਐਪ" to "whatsapp", "व्हाट्सएप" to "whatsapp",
+            "ਇੰਸਟਾਗ੍ਰਾਮ" to "instagram", "ਇੰਸਟਾ" to "instagram", "इंस्टाग्राम" to "instagram",
+            "ਫੇਸਬੁੱਕ" to "facebook", "ਫੇਸਬੁਕ" to "facebook", "फेसबुक" to "facebook",
+            "ਕੈਮਰਾ" to "camera", "कैमरा" to "camera", "ਗੈਲਰੀ" to "gallery", "गैलरी" to "gallery",
+            "ਸੈਟਿੰਗ" to "settings", "ਸੈਟਿੰਗਜ਼" to "settings", "ਸੈਟਿੰਗਸ" to "settings", "सेटिंग" to "settings",
+            "ਕਰੋਮ" to "chrome", "क्रोम" to "chrome", "ਮੈਪ" to "maps", "ਮੈਪਸ" to "maps", "मैप" to "maps",
+            "ਸਪੋਟੀਫਾਈ" to "spotify", "ਟਿਕਟੌਕ" to "tiktok", "ਟਿਕ ਟੌਕ" to "tiktok", "ਸਨੈਪਚੈਟ" to "snapchat",
+            "ਸਨੈਪ" to "snapchat", "ਜੀਮੇਲ" to "gmail", "ਨੈੱਟਫਲਿਕਸ" to "netflix", "ਨੈਟਫਲਿਕਸ" to "netflix",
+            "ਕੈਲਕੁਲੇਟਰ" to "calculator", "ਘੜੀ" to "clock", "ਫ਼ੋਨ" to "phone", "ਫੋਨ" to "phone",
+            "ਮੈਸੇਜ" to "messages", "ਮੈਸੇਜਸ" to "messages", "ਟੈਲੀਗ੍ਰਾਮ" to "telegram", "ਟੈਲੀਗਰਾਮ" to "telegram",
+            "ਐਮਾਜ਼ਾਨ" to "amazon", "ਪਲੇ ਸਟੋਰ" to "play store", "ਪਲੇਸਟੋਰ" to "play store"
+        )
+    }
+
+    private fun youtube(query: String): String? {
         try {
             start(Intent(Intent.ACTION_SEARCH).setPackage("com.google.android.youtube").putExtra("query", query))
         } catch (e: ActivityNotFoundException) {
             view("https://www.youtube.com/results?search_query=" + Uri.encode(query))
         }
+        return null
     }
 
     private fun webSearch(query: String): String? {
@@ -325,7 +352,7 @@ class Actions(private val activity: Context) {
         val pkg = when (norm(app)) {
             "spotify" -> "com.spotify.music"
             "youtubemusic", "ytmusic" -> "com.google.android.apps.youtube.music"
-            "youtube" -> if (CarAudio.inCar(activity)) "com.google.android.apps.youtube.music" else return youtube(query)
+            "youtube" -> return youtube(query)
             else -> null
         }
         if (pkg != null) i.setPackage(pkg)

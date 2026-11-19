@@ -131,6 +131,7 @@ class SettingsActivity : Activity() {
             PAGE_THEME -> themePage(content)
             PAGE_ACCENT -> accentPage(content)
             PAGE_APIKEY -> apiKeyPage(content)
+            PAGE_VOICES -> voicesPage(content)
         }
         scroll.addView(content, ViewGroup.LayoutParams(-1, -2))
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
@@ -207,6 +208,7 @@ class SettingsActivity : Activity() {
         PAGE_THEME -> "Theme"
         PAGE_ACCENT -> "Accent Color"
         PAGE_APIKEY -> "API Key"
+        PAGE_VOICES -> "Voice"
         else -> "Settings"
     }
 
@@ -384,7 +386,7 @@ class SettingsActivity : Activity() {
         header.addView(avatar, LinearLayout.LayoutParams(dp(60), dp(60)).apply { marginEnd = dp(14) })
         val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         texts.addView(Ui.text(this, "Singh AI", 22f, p.text, Ui.medium))
-        texts.addView(Ui.text(this, "Gemini · ਪੰਜਾਬੀ + English", 14f, p.muted))
+        texts.addView(Ui.text(this, "Your Punjabi + English assistant", 14f, p.muted))
         header.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
         section(c, null, listOf(Row(header, false)))
 
@@ -407,15 +409,18 @@ class SettingsActivity : Activity() {
                     prefs.edit().putBoolean("fallback_on", it).apply()
                 })
             ),
-            "Server busy (503) hove taan Singh AI 1, 2 te 4 second baad dubara koshish karda hai, fer Backup Model warat'da hai."
+            "If Google is busy (503), Singh AI retries after 1, 2 and 4 seconds, then uses the Backup Model."
         )
 
         // ---- Voice
         val speed = prefs.getFloat("voice_speed", 1.0f)
         section(
             c, "Voice", listOf(
-                row("Language", Glyph.GLOBE, iosBlue, value = if (pa) "ਪੰਜਾਬੀ" else "English", chevron = true) {
+                row("Talk in", Glyph.GLOBE, iosBlue, value = if (pa) "Punjabi" else "English", chevron = true) {
                     open(PAGE_LANGUAGE)
+                },
+                row("Voice", Glyph.PERSON, iosOrange, value = VoiceSettings.pitchLabel(this), chevron = true) {
+                    open(PAGE_VOICES)
                 },
                 row("Voice Speed", Glyph.SPEED, iosPink, value = speedLabel(speed), chevron = true) {
                     open(PAGE_SPEED)
@@ -431,10 +436,10 @@ class SettingsActivity : Activity() {
                     prefs.edit().putBoolean("keep_talking", it).apply()
                 }),
                 row("Side Key → Singh AI", Glyph.MIC, iosPurple, chevron = true) {
-                    openSetting(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), "Digital assistant app → Singh AI chuno")
+                    openSetting(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), "Digital assistant app → choose Singh AI")
                 }
             ),
-            "Hey Singh AI: screen on hove taan \"Singh AI\" kaho — upar chhota popup aunda, app nahi khuldi, sun ke jawab dinda te kamm karda. (Screen Control ON chahida; thodi battery khaanda hai.) Auto Listen: app khuldi hi mic chal penda hai. Keep Listening: jawab den ton baad aap hi fer sunda hai. Side key lamba dabao te Singh AI khul ke sunna shuru kar dinda hai."
+            "Hey Singh AI: say \"Singh AI\" while the screen is on — a small popup answers without opening the app (needs Screen Control; uses some battery; Android shows the green mic dot). Side key: shows the popup and listens. Auto Listen: the mic starts when you open the app. Keep Listening: listens again after each answer."
         )
 
         // ---- Appearance
@@ -468,14 +473,14 @@ class SettingsActivity : Activity() {
                     openSetting(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), "Installed apps → Singh AI screen control → ON")
                 },
                 row("Read Notifications", Glyph.BELL, iosRed, value = on(notif), valueColor = onColor(notif), chevron = true) {
-                    openSetting(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS), "Singh AI nu ON karo")
+                    openSetting(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS), "Turn Singh AI ON")
                 },
                 row("Change Brightness", Glyph.SUN, iosOrange, value = on(bright), valueColor = onColor(bright), chevron = true) {
-                    openSetting(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")), "Allow karo")
+                    openSetting(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")), "Tap Allow")
                 },
                 row("'Restricted setting' Help", Glyph.LOCK, iosGray, chevron = true) { showRestrictedHelp() }
             ),
-            "Screen Control naal Singh AI kise vi app vich tap, type te scroll kar sakda hai."
+            "Screen Control lets Singh AI tap, type and scroll in any app, and show its popup over other apps."
         )
 
         // ---- Memory
@@ -484,7 +489,7 @@ class SettingsActivity : Activity() {
             c, "Memory", listOf(
                 row("What Singh AI remembers", Glyph.STAR, iosOrange, value = "${mem.size}", chevron = true) { showMemory() }
             ),
-            "Bolo \"yaad rakh…\" te Singh AI hamesha yaad rakhega (naam, ghar wale, pasand). \"Bhul ja…\" kaho taan mita dinda hai."
+            "Say \"remember…\" and Singh AI keeps it forever (your name, family, likes). Say \"forget…\" to remove it."
         )
 
         // ---- About
@@ -500,7 +505,7 @@ class SettingsActivity : Activity() {
                     catch (e: Exception) {}
                 }
             ),
-            "Nawi gall-baat: main screen te gole nu lamba dabao."
+            "New chat: tap the chat icon at the top left of the main screen."
         )
     }
 
@@ -520,7 +525,7 @@ class SettingsActivity : Activity() {
         f.tag = prefKey
         f.setOnEditorActionListener { _, _, _ -> saveCustomModel(); finish(); true }
         modelField = f
-        section(c, "Custom model ID", listOf(Row(f, false)), "Model da naam ethe likh sakde ho. Khaali chhado taan upar wala chuniya model chalega.")
+        section(c, "Custom model ID", listOf(Row(f, false)), "Type any model ID here. Leave it empty to use the one picked above.")
     }
 
     private fun saveCustomModel() {
@@ -534,10 +539,10 @@ class SettingsActivity : Activity() {
         val pa = prefs.getBoolean("punjabi", true)
         section(
             c, null, listOf(
-                row("ਪੰਜਾਬੀ (Punjabi)", checked = pa) { prefs.edit().putBoolean("punjabi", true).apply(); finish() },
+                row("Punjabi  ·  ਪੰਜਾਬੀ", checked = pa) { prefs.edit().putBoolean("punjabi", true).apply(); finish() },
                 row("English", checked = !pa) { prefs.edit().putBoolean("punjabi", false).apply(); finish() }
             ),
-            "Main screen te ਪੰਜਾਬੀ / EN button naal vi badal sakde ho."
+            "You can also just say \"talk in Punjabi\" or \"talk in English\", or tap the language button on the main screen."
         )
     }
 
@@ -566,7 +571,7 @@ class SettingsActivity : Activity() {
         val cur = Ui.themeMode(this)
         section(c, null, listOf("system", "light", "dark").map { m ->
             row(themeLabel(m), checked = m == cur) { prefs.edit().putString("theme", m).apply(); finish() }
-        }, "Automatic: phone di setting naal Dark / Light.")
+        }, "Automatic follows your phone's Dark / Light setting.")
     }
 
     private fun accentPage(c: LinearLayout) {
@@ -583,7 +588,7 @@ class SettingsActivity : Activity() {
         f.setOnEditorActionListener { _, _, _ -> saveKey(); true }
         keyField = f
         section(c, "Gemini API key", listOf(Row(f, false)),
-            "Singh AI da dimaag Google Gemini hai. Muft key lao: aistudio.google.com/apikey → \"Create API key\" → copy karke ethe paste karo → Save.")
+            "Singh AI's brain is Google Gemini. Get a free key at aistudio.google.com/apikey → \"Create API key\" → copy → paste here → Save.")
         section(c, null, listOf(
             row("Test key", Glyph.CHECK, iosGreen, chevron = true) { testKey() },
             row("Get a free key", Glyph.KEY, iosOrange, chevron = true) {
@@ -599,7 +604,7 @@ class SettingsActivity : Activity() {
         val raw = keyField?.text?.toString() ?: Gemini.apiKey(this)
         val wait = AlertDialog.Builder(this, Ui.dialogTheme(this))
             .setTitle("Test key")
-            .setMessage("Google naal check kar riha haan…")
+            .setMessage("Checking with Google…")
             .setCancelable(false)
             .show()
         Thread {
@@ -617,7 +622,7 @@ class SettingsActivity : Activity() {
                         val pick = bestModel(models, lite = false)
                         if (pick != null) {
                             prefs.edit().putString("model", pick).apply()
-                            note += "\n\nModel '$cur' is key naal nahi chalda → '$pick' set kar ditta."
+                            note += "\n\nModel '$cur' doesn't work with this key → switched to '$pick'."
                         }
                     }
                     val back = Gemini.fallbackModel(this)
@@ -630,9 +635,9 @@ class SettingsActivity : Activity() {
             runOnUiThread {
                 try { wait.dismiss() } catch (e: Exception) {}
                 AlertDialog.Builder(this, Ui.dialogTheme(this))
-                    .setTitle(if (ok) "Key chal rahi hai" else "Key nahi chali")
+                    .setTitle(if (ok) "Key works" else "Key doesn't work")
                     .setMessage(text + note + (if (ok) "" else
-                        "\n\nHal: aistudio.google.com/apikey te NAWIN key banao, usda naam na badlo, copy karke ethe paste karo."))
+                        "\n\nFix: make a NEW key at aistudio.google.com/apikey, don't rename it, copy it and paste it here."))
                     .setPositiveButton("OK", null)
                     .show()
             }
@@ -646,6 +651,80 @@ class SettingsActivity : Activity() {
         val bad = listOf("image", "tts", "audio", "live", "embedding", "vision", "exp", "preview", "thinking")
         val flash = models.filter { m -> m.contains("flash") && bad.none { m.contains(it) } && m.contains("lite") == lite }
         return flash.maxOrNull() ?: models.firstOrNull { m -> m.contains("flash") && bad.none { m.contains(it) } }
+    }
+
+    // ---------------------------------------------------------------- voices
+
+    private var tts: android.speech.tts.TextToSpeech? = null
+    private var ttsReady = false
+
+    private fun voicesPage(c: LinearLayout) {
+        if (tts == null) {
+            tts = android.speech.tts.TextToSpeech(this) { status ->
+                ttsReady = status == android.speech.tts.TextToSpeech.SUCCESS
+                runOnUiThread { if (page == PAGE_VOICES) try { build() } catch (e: Exception) {} }
+            }
+        }
+        val curPitch = VoiceSettings.pitch(this)
+        section(c, "Voice style", VoiceSettings.PITCHES.map { (v, label) ->
+            row(label + when (label) { "Deep" -> "  (more like a man)"; "Higher" -> "  (more like a woman)"; else -> "" },
+                checked = kotlin.math.abs(v - curPitch) < 0.01f) {
+                prefs.edit().putFloat("voice_pitch", v).apply()
+                preview("en", null)
+                build()
+            }
+        }, "Pick a voice below for the real man / woman sound; the style makes it deeper or higher.")
+
+        if (!ttsReady) {
+            section(c, null, listOf(row("Loading voices…")))
+            return
+        }
+        val all = try { tts?.voices?.toList().orEmpty() } catch (e: Exception) { emptyList() }
+        for ((lang, title) in listOf("en" to "English voices", "pa" to "Punjabi voices", "hi" to "Hindi voices")) {
+            val list = all.filter { v ->
+                v.locale.language == lang && (lang != "en" || v.locale.country in listOf("IN", "US", "GB", "AU"))
+            }.sortedWith(compareBy({ it.locale.country != "IN" }, { it.isNetworkConnectionRequired }, { it.name }))
+                .take(24)
+            if (list.isEmpty()) continue
+            val saved = VoiceSettings.savedVoice(this, lang)
+            val rows = ArrayList<Row>()
+            rows.add(row("Automatic", checked = saved == null) {
+                VoiceSettings.saveVoice(this, lang, null); preview(lang, null); build()
+            })
+            list.forEachIndexed { i, v ->
+                val tag = (if (v.locale.country.isNotEmpty()) v.locale.country + " · " else "") +
+                    (if (v.isNetworkConnectionRequired) "online" else "offline")
+                rows.add(row("Voice ${('A' + i)}", value = tag, checked = saved == v.name) {
+                    VoiceSettings.saveVoice(this, lang, v.name); preview(lang, v); build()
+                })
+            }
+            section(c, title, rows, if (lang == "en") "Tap a voice to hear it." else null)
+        }
+        section(c, null, listOf(
+            row("Get more voices", Glyph.GLOBE, iosBlue, chevron = true) {
+                try { startActivity(Intent("com.android.settings.TTS_SETTINGS")) } catch (e: Exception) {
+                    try { startActivity(Intent(android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)) } catch (x: Exception) {}
+                }
+            }
+        ), "Settings → Text-to-speech → Google engine → ⚙ → Install voice data → download English (India) and ਪੰਜਾਬੀ.")
+    }
+
+    private fun preview(lang: String, v: android.speech.tts.Voice?) {
+        val t = tts ?: return
+        if (!ttsReady) return
+        val sample = when (lang) {
+            "pa" -> "ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਮੈਂ ਸਿੰਘ AI ਹਾਂ।"
+            "hi" -> "नमस्ते, मैं सिंह AI हूँ।"
+            else -> "Hello, I am Singh AI. How can I help?"
+        }
+        VoiceSettings.apply(this, t, sample, punjabiVoice = true)
+        if (v != null) try { t.voice = v } catch (e: Exception) {}
+        t.speak(sample, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "preview")
+    }
+
+    override fun onDestroy() {
+        tts?.shutdown()
+        super.onDestroy()
     }
 
     private fun saveKey() {
@@ -670,13 +749,13 @@ class SettingsActivity : Activity() {
         val mem = Memory.all(this)
         AlertDialog.Builder(this, Ui.dialogTheme(this))
             .setTitle("Memory (${mem.size})")
-            .setMessage(if (mem.isEmpty()) "Haje kuch yaad nahi. Bolo: \"yaad rakh mera naam … hai\"." else mem.joinToString("\n") { "• $it" })
+            .setMessage(if (mem.isEmpty()) "Nothing saved yet. Say: \"remember my name is …\"." else mem.joinToString("\n") { "• $it" })
             .setPositiveButton("OK", null)
             .setNegativeButton("Clear all") { _, _ ->
                 AlertDialog.Builder(this, Ui.dialogTheme(this))
-                    .setMessage("Saari memory mita deyiye?")
-                    .setPositiveButton("Haan, mitao") { _, _ -> Memory.clear(this); build() }
-                    .setNegativeButton("Nahi", null)
+                    .setMessage("Delete everything Singh AI remembers?")
+                    .setPositiveButton("Delete") { _, _ -> Memory.clear(this); build() }
+                    .setNegativeButton("Cancel", null)
                     .show()
             }
             .show()
@@ -686,12 +765,12 @@ class SettingsActivity : Activity() {
         AlertDialog.Builder(this, Ui.dialogTheme(this))
             .setTitle("Restricted setting")
             .setMessage(
-                "Android GitHub ton install hoyi app nu Screen control ON karan ton rokda hai.\n\n" +
-                    "1. Hun 'App info' khulega.\n" +
-                    "2. Upar sajje ⋮ (3 dots) dabao → \"Allow restricted settings\".\n" +
-                    "3. Fer Settings → Screen Control → ON karo."
+                "Android blocks Screen Control for apps installed outside the Play Store.\n\n" +
+                    "1. 'App info' opens now.\n" +
+                    "2. Tap ⋮ (3 dots, top right) → \"Allow restricted settings\".\n" +
+                    "3. Then Settings → Screen Control → ON."
             )
-            .setPositiveButton("App info kholo") { _, _ ->
+            .setPositiveButton("Open App info") { _, _ ->
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
             }
             .setNegativeButton("Close", null)
@@ -717,6 +796,7 @@ class SettingsActivity : Activity() {
         const val PAGE_THEME = "theme"
         const val PAGE_ACCENT = "accent"
         const val PAGE_APIKEY = "apikey"
+        const val PAGE_VOICES = "voices"
         private const val REQ_ALL = 8
     }
 }

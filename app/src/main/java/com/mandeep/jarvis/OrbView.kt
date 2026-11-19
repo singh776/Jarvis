@@ -267,3 +267,72 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
     private val star = android.graphics.Path()
     private val starPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 }
+
+/**
+ * Soft moving light along the bottom of the screen (like an AI "live" mode):
+ * faint when idle, bright and bouncing with your voice while listening, flowing while speaking.
+ */
+class GlowView(context: Context) : View(context) {
+    var mode: OrbView.Mode = OrbView.Mode.IDLE
+    var level = 0f
+        set(v) { field = v.coerceIn(0f, 1f) }
+    var dark = true
+
+    private val colors = intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK, Color.parseColor("#36C5F0"))
+    private val shaders = colors.map {
+        RadialGradient(0f, 0f, 1f,
+            intArrayOf(Color.argb(200, Color.red(it), Color.green(it), Color.blue(it)),
+                Color.argb(70, Color.red(it), Color.green(it), Color.blue(it)),
+                Color.argb(0, Color.red(it), Color.green(it), Color.blue(it))),
+            floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+    }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val m = Matrix()
+    private var t = 0f
+    private var last = 0L
+    private var amt = 0.25f
+    private var smooth = 0f
+
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 1000
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener {
+            val now = System.nanoTime()
+            val dt = if (last == 0L) 0.016f else ((now - last) / 1e9f).coerceIn(0f, 0.05f)
+            last = now
+            t += dt
+            smooth += (level - smooth) * 0.2f
+            val target = when (mode) {
+                OrbView.Mode.LISTENING -> 0.75f + smooth * 0.35f
+                OrbView.Mode.SPEAKING -> 0.7f + 0.15f * sin(t * 6f)
+                OrbView.Mode.THINKING -> 0.55f
+                OrbView.Mode.IDLE -> 0.28f
+            }
+            amt += (target - amt) * 0.06f
+            invalidate()
+        }
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); last = 0L; animator.start() }
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        val speed = when (mode) { OrbView.Mode.THINKING -> 1.4f; OrbView.Mode.IDLE -> 0.25f; else -> 0.7f }
+        for (i in shaders.indices) {
+            val ph = i * 1.7f + t * speed * (if (i % 2 == 0) 1f else -0.8f)
+            val x = w * (0.5f + 0.42f * sin(ph))
+            val r = h * (0.75f + 0.25f * sin(ph * 0.7f + i)) * (0.75f + amt * 0.5f)
+            m.setScale(r * 1.4f, r)
+            m.postTranslate(x, h * 1.02f)
+            shaders[i].setLocalMatrix(m)
+            paint.shader = shaders[i]
+            paint.alpha = ((if (dark) 255 else 200) * amt.coerceIn(0f, 1f)).toInt()
+            canvas.drawRect(0f, 0f, w, h, paint)
+        }
+        paint.shader = null
+    }
+}

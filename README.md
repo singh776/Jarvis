@@ -24,6 +24,13 @@ Is repo vich code push hunde hi **GitHub Actions** aap APK bana dinda hai (3–5
 2. Sab ton upar wali release vich `Jarvis.apk` te tap karo → download.
 3. Install karo (pehli vaar "Install unknown apps" di permission deni paindi hai).
 
+## Nawan v2.9
+- **Nawan design (AI-app wargi):** khaali screen te "What's next, <naam>?" te chamakda tara-gola; thalle halki rangeen roshni jo awaaz naal hildi; sunan vele input bar lehraundi line ban jaandi; upar-khabbe "new chat".
+- **App English vich**, gall-baat di bhasha tusi bol ke badlo: "Punjabi ch gall kar" / "talk in English". Translate: "is nu Punjabi ch translate kar…".
+- **Awaaz badlo:** Settings → Voice → Voice — banda/zanani wali awaaz chuno (Deep / Normal / Higher + saariyan awaazan sun ke chuno).
+- **Popup theek:** ✕, thalle swipe, ja bahar tap naal band; kade atakda nahi (20 sec watchdog). Kamm di progress hun upar nahi, ise popup vich.
+- **Tez:** "YouTube khol" warge hukam AI di udeek bina turant khulde.
+
 ## Nawan v2.8
 - **Side key → chhota popup:** puri app nahi khuldi; thalle Gemini wargi card (rangeen kinara + lehraundi line) aundi, sun ke jawab dindi te kamm kardi.
 - **"Hey Singh AI" hun default BAND:** mic sirf side key / app kholan te chalda. Je "Singh AI" bol ke chalauna hai taan Settings → Voice → Hey Singh AI ON karo (os vele mic background vich sunda rehnda — Android hara mic-nishan dikhaunda).
