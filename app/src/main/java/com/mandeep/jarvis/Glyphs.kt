@@ -19,7 +19,8 @@ import kotlin.math.sin
 /** Simple line icons drawn in code (no image files needed). */
 enum class Glyph {
     GEAR, SEND, MIC, KEY, SPARKLE, LAYERS, GLOBE, SPEED, CHAT, MOON, PALETTE, SHIELD, BELL, SUN, PERSON,
-    STAR, INFO, CODE, LOCK, CHECK, BACK, CHEVRON, TRASH, PLUS, CAMERA, IMAGE, FILE, SCREEN, CLOSE
+    STAR, INFO, CODE, LOCK, CHECK, BACK, CHEVRON, TRASH, PLUS, CAMERA, IMAGE, FILE, SCREEN, CLOSE,
+    MENU, PEN, VIDEO, MIC_OFF, MUSIC
 }
 
 object Glyphs {
@@ -263,6 +264,40 @@ object Glyphs {
                 path.lineTo(cx + s * 0.4f, cy + s * 0.8f)
                 path.lineTo(cx + s * 0.5f, cy - s * 0.5f)
                 c.drawPath(path, p)
+            }
+            Glyph.MENU -> {
+                c.drawLine(cx - s * 0.7f, cy - s * 0.25f, cx + s * 0.7f, cy - s * 0.25f, p)
+                c.drawLine(cx - s * 0.7f, cy + s * 0.25f, cx + s * 0.7f, cy + s * 0.25f, p)
+            }
+            Glyph.PEN -> {
+                // pencil with a dotted circle, like Gemini's "new chat"
+                c.drawLine(cx - s * 0.15f, cy + s * 0.25f, cx + s * 0.55f, cy - s * 0.45f, p)
+                c.drawLine(cx - s * 0.15f, cy + s * 0.25f, cx - s * 0.25f, cy + s * 0.35f, p)
+                val dot = p.strokeWidth * 0.55f
+                p.style = Paint.Style.FILL
+                for (i in 0 until 9) {
+                    val a = Math.toRadians(100.0 + i * 30.0)
+                    c.drawCircle(cx + cos(a).toFloat() * s * 0.8f, cy + sin(a).toFloat() * s * 0.8f, dot, p)
+                }
+                p.style = Paint.Style.STROKE
+            }
+            Glyph.VIDEO -> {
+                r.set(cx - s * 0.75f, cy - s * 0.5f, cx + s * 0.3f, cy + s * 0.5f)
+                c.drawRoundRect(r, s * 0.25f, s * 0.25f, p)
+                c.drawLine(cx + s * 0.6f, cy - s * 0.3f, cx + s * 0.6f, cy + s * 0.3f, p)
+            }
+            Glyph.MIC_OFF -> {
+                r.set(cx - s * 0.28f, cy - s * 0.8f, cx + s * 0.28f, cy + s * 0.2f)
+                c.drawRoundRect(r, s * 0.28f, s * 0.28f, p)
+                r.set(cx - s * 0.55f, cy - s * 0.35f, cx + s * 0.55f, cy + s * 0.5f)
+                c.drawArc(r, 0f, 180f, false, p)
+                c.drawLine(cx, cy + s * 0.5f, cx, cy + s * 0.8f, p)
+                c.drawLine(cx - s * 0.75f, cy - s * 0.85f, cx + s * 0.75f, cy + s * 0.85f, p)
+            }
+            Glyph.MUSIC -> {
+                c.drawCircle(cx - s * 0.35f, cy + s * 0.5f, s * 0.25f, p)
+                c.drawLine(cx - s * 0.1f, cy + s * 0.5f, cx - s * 0.1f, cy - s * 0.75f, p)
+                c.drawLine(cx - s * 0.1f, cy - s * 0.75f, cx + s * 0.55f, cy - s * 0.5f, p)
             }
         }
     }

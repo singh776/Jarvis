@@ -48,7 +48,13 @@ class Actions(private val activity: Context) {
         return try {
             when (action.optString("type", "none")) {
                 "open_app" -> msg(openApp(action.optString("name"), pa))
-                "youtube" -> msg(youtube(action.optString("query")))
+                "youtube" -> {
+                    if (action.optBoolean("song", false)) Playlist.add(activity, action.optString("query"))
+                    msg(
+                        if (CarAudio.inCar(activity)) playMusic(action.optString("query"), "youtube music")
+                        else youtube(action.optString("query"))
+                    )
+                }
                 "web_search" -> msg(webSearch(action.optString("query")))
                 "maps" -> msg(view("geo:0,0?q=" + Uri.encode(action.optString("query"))))
                 "dial", "call" -> msg(call(action, pa))
@@ -71,7 +77,15 @@ class Actions(private val activity: Context) {
                     activity.getSharedPreferences("jarvis", Context.MODE_PRIVATE).edit().putBoolean("punjabi", toPa).apply()
                     ActionResult()
                 }
-                "play_music" -> msg(playMusic(action.optString("query"), action.optString("app")))
+                "play_music" -> {
+                    Playlist.add(activity, action.optString("query"))
+                    msg(playMusic(action.optString("query"), action.optString("app")))
+                }
+                "play_playlist" -> msg(playPlaylist(action.optBoolean("shuffle", false), pa))
+                "playlist_remove" -> msg(
+                    if (Playlist.remove(activity, action.optString("query"))) p(pa, "ਪਲੇਲਿਸਟ ਵਿੱਚੋਂ ਕੱਢ ਦਿੱਤਾ।", "Removed from your playlist.")
+                    else p(pa, "ਇਹ ਗਾਣਾ ਪਲੇਲਿਸਟ ਵਿੱਚ ਨਹੀਂ ਮਿਲਿਆ।", "That song isn't in your playlist.")
+                )
                 "navigate" -> msg(navigate(action.optString("query")))
                 else -> ActionResult()
             }
@@ -173,13 +187,37 @@ class Actions(private val activity: Context) {
         )
     }
 
+    /**
+     * Plays the top YouTube video for [query] straight away (not just the search page).
+     * Finds the video in the background, then opens it in the YouTube app.
+     */
     private fun youtube(query: String): String? {
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread {
+            val id = try { YouTubeFinder.firstVideoId(query) } catch (e: Exception) { null }
+            main.post {
+                try {
+                    if (id != null) {
+                        val i = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:$id"))
+                            .setPackage("com.google.android.youtube")
+                        try { start(i) } catch (e: ActivityNotFoundException) {
+                            view("https://www.youtube.com/watch?v=$id")
+                        }
+                    } else youtubeSearch(query)
+                } catch (e: Exception) {
+                    try { youtubeSearch(query) } catch (e2: Exception) {}
+                }
+            }
+        }.start()
+        return null
+    }
+
+    private fun youtubeSearch(query: String) {
         try {
             start(Intent(Intent.ACTION_SEARCH).setPackage("com.google.android.youtube").putExtra("query", query))
         } catch (e: ActivityNotFoundException) {
             view("https://www.youtube.com/results?search_query=" + Uri.encode(query))
         }
-        return null
     }
 
     private fun webSearch(query: String): String? {
@@ -352,11 +390,37 @@ class Actions(private val activity: Context) {
         val pkg = when (norm(app)) {
             "spotify" -> "com.spotify.music"
             "youtubemusic", "ytmusic" -> "com.google.android.apps.youtube.music"
-            "youtube" -> return youtube(query)
+            "youtube" -> if (CarAudio.inCar(activity)) "com.google.android.apps.youtube.music" else return youtube(query)
             else -> null
         }
         if (pkg != null) i.setPackage(pkg)
         try { start(i) } catch (e: ActivityNotFoundException) { return youtube(query) }
+        return null
+    }
+
+    /** Plays "meri playlist" — all saved songs in one go on YouTube (YouTube Music in the car). */
+    private fun playPlaylist(shuffle: Boolean, pa: Boolean): String? {
+        val ids = Playlist.ids(activity, shuffle)
+        if (ids.isEmpty()) {
+            val first = Playlist.ordered(activity).firstOrNull()
+                ?: return p(pa, "ਤੁਹਾਡੀ ਪਲੇਲਿਸਟ ਹਾਲੇ ਖਾਲੀ ਹੈ। ਜਿਹੜੇ ਗਾਣੇ ਲਵਾਓਗੇ, ਉਹ ਆਪੇ ਜੁੜਦੇ ਜਾਣਗੇ।",
+                    "Your playlist is empty for now. Songs you play get added by themselves.")
+            return youtube(first.query)
+        }
+        val list = ids.joinToString(",")
+        if (CarAudio.inCar(activity)) {
+            try {
+                start(Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/watch_videos?video_ids=$list"))
+                    .setPackage("com.google.android.apps.youtube.music"))
+                return null
+            } catch (e: Exception) { /* use YouTube below */ }
+        }
+        val url = "https://www.youtube.com/watch_videos?video_ids=$list"
+        try {
+            start(Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage("com.google.android.youtube"))
+        } catch (e: ActivityNotFoundException) {
+            view(url)
+        }
         return null
     }
 

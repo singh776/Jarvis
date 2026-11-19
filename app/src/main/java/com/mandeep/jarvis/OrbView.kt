@@ -254,17 +254,19 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
         canvas.rotate(ringSpin * 0.15f)
         m.setRotate(-ringSpin * 0.6f)
         rs.setLocalMatrix(m)
-        starPaint.shader = SweepGradient(
-            0f, 0f,
-            intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK, Color.parseColor("#36C5F0"), Ui.GEMINI_BLUE),
-            null
-        ).also { it.setLocalMatrix(m) }
+        starShader.setLocalMatrix(m)
+        starPaint.shader = starShader
         starPaint.alpha = (255 * e).toInt()
         canvas.drawPath(star, starPaint)
         canvas.restore()
     }
 
     private val star = android.graphics.Path()
+    private val starShader = SweepGradient(
+        0f, 0f,
+        intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK, Color.parseColor("#36C5F0"), Ui.GEMINI_BLUE),
+        null
+    )
     private val starPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 }
 

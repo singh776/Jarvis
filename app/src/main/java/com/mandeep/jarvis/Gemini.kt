@@ -77,6 +77,8 @@ object Gemini {
         val key = apiKey(ctx)
         if (key.isEmpty()) throw IllegalStateException("No Gemini API key")
 
+        val contents = sanitize(contents)
+        if (contents.length() == 0) throw GeminiException(400, "Gemini error 400: empty request")
         val main = model(ctx)
         var last: GeminiException? = null
 
@@ -112,39 +114,75 @@ object Gemini {
         throw last ?: GeminiException(503, "busy")
     }
 
-    /** Models that refused "no thinking" — we stop asking them for it. */
-    private val thinkingRequired = java.util.Collections.synchronizedSet(HashSet<String>())
+    /**
+     * Cleans the conversation so Google never rejects it with 400:
+     * drops empty messages, joins two messages in a row from the same side,
+     * and makes sure it starts and ends with the user.
+     */
+    fun sanitize(contents: JSONArray): JSONArray {
+        val out = JSONArray()
+        for (i in 0 until contents.length()) {
+            val c = contents.optJSONObject(i) ?: continue
+            val role = if (c.optString("role") == "model") "model" else "user"
+            val parts = c.optJSONArray("parts") ?: continue
+            val good = JSONArray()
+            for (j in 0 until parts.length()) {
+                val p = parts.optJSONObject(j) ?: continue
+                if (p.has("inline_data") || p.has("inlineData")) good.put(p)
+                else if (p.optString("text").isNotBlank()) good.put(JSONObject().put("text", p.optString("text")))
+            }
+            if (good.length() == 0) continue
+            if (out.length() == 0 && role == "model") continue
+            val prev = if (out.length() > 0) out.getJSONObject(out.length() - 1) else null
+            if (prev != null && prev.getString("role") == role) {
+                val pp = prev.getJSONArray("parts")
+                for (j in 0 until good.length()) pp.put(good.get(j))
+            } else out.put(JSONObject().put("role", role).put("parts", good))
+        }
+        while (out.length() > 0 && out.getJSONObject(out.length() - 1).getString("role") == "model") out.remove(out.length() - 1)
+        return out
+    }
+
+    /**
+     * Fast answers: ask Flash models to think as little as possible.
+     * Newer models only accept some levels, so we try "minimal" -> "low" -> no setting,
+     * and remember per model what worked (so only the very first question is a bit slower).
+     */
+    private val THINK_LEVELS = listOf("minimal", "low", "")
+    private val thinkLevel = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String {
-        // Skip the slow "thinking" step on Flash models so answers come back faster.
-        val fast = model.contains("flash") && model !in thinkingRequired
-        return try {
-            callKey(key, model, system, contents, json, fast)
-        } catch (e: GeminiException) {
-            if (fast && e.code == 400 && e.message.orEmpty().contains("thinking", true)) {
-                thinkingRequired.add(model)
-                callKey(key, model, system, contents, json, false)
-            } else throw e
+        var i = if (model.contains("flash")) thinkLevel[model] ?: 0 else THINK_LEVELS.size - 1
+        while (true) {
+            try {
+                val out = callKey(key, model, system, contents, json, THINK_LEVELS[i])
+                thinkLevel[model] = i
+                return out
+            } catch (e: GeminiException) {
+                val canTryNext = e.code == 400 && !e.message.orEmpty().contains("API key", true) && i < THINK_LEVELS.size - 1
+                if (!canTryNext) throw e
+                i++
+            }
         }
     }
 
-    private fun callKey(key: String, model: String, system: String, contents: JSONArray, json: Boolean, fast: Boolean): String =
+    private fun callKey(key: String, model: String, system: String, contents: JSONArray, json: Boolean, think: String): String =
         try {
-            call(key, model, system, contents, json, keyInUrl = false, fast = fast)
+            call(key, model, system, contents, json, keyInUrl = false, think = think)
         } catch (e: GeminiException) {
             // Some keys are only accepted as ?key=… — try that once before giving up.
-            if (e.code == 401 || e.code == 403) call(key, model, system, contents, json, keyInUrl = true, fast = fast) else throw e
+            if (e.code == 401 || e.code == 403) call(key, model, system, contents, json, keyInUrl = true, think = think) else throw e
         }
 
     private fun call(
-        key: String, model: String, system: String, contents: JSONArray, json: Boolean, keyInUrl: Boolean, fast: Boolean
+        key: String, model: String, system: String, contents: JSONArray, json: Boolean, keyInUrl: Boolean, think: String
     ): String {
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", contents)
         val gen = JSONObject()
         if (json) gen.put("responseMimeType", "application/json")
-        if (fast) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        if (think.isNotEmpty()) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", think))
         if (gen.length() > 0) body.put("generationConfig", gen)
 
         val url = URL(
@@ -154,8 +192,8 @@ object Gemini {
         )
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 15000
-            readTimeout = 60000
+            connectTimeout = 10000
+            readTimeout = 45000
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             if (!keyInUrl) setRequestProperty("x-goog-api-key", key)
@@ -165,13 +203,15 @@ object Gemini {
             val (code, raw) = read(conn)
             if (code !in 200..299) throw toError(code, raw)
             val parts = JSONObject(raw)
-                .getJSONArray("candidates").getJSONObject(0)
-                .getJSONObject("content").getJSONArray("parts")
+                .optJSONArray("candidates")?.optJSONObject(0)
+                ?.optJSONObject("content")?.optJSONArray("parts")
+                ?: throw GeminiException(503, "Gemini error 503: no answer (blocked or empty)")
             val sb = StringBuilder()
             for (i in 0 until parts.length()) {
                 val p = parts.getJSONObject(i)
                 if (!p.optBoolean("thought", false)) sb.append(p.optString("text", ""))
             }
+            if (sb.isBlank()) throw GeminiException(503, "Gemini error 503: empty answer")
             return sb.toString()
         } finally {
             conn.disconnect()
@@ -271,7 +311,8 @@ object Gemini {
             e is IllegalStateException ->
                 if (punjabi) "ਪਹਿਲਾਂ ਸੈਟਿੰਗ ਵਿੱਚ Gemini API key ਪਾਓ।" else "Please add your Gemini API key in Settings first."
             e is GeminiException ->
-                (if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ।" else "Sorry Sir, something went wrong.") + " (${e.code})"
+                (if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ।" else "Sorry Sir, something went wrong.") + " (${e.code})" +
+                    (if (e.code == 400) "\n" + e.message.orEmpty().removePrefix("Gemini error 400: ").take(160) else "")
             else ->
                 (if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ।" else "Sorry Sir, something went wrong.") +
                     " (${e.javaClass.simpleName})"
