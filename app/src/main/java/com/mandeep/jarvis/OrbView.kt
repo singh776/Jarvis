@@ -8,6 +8,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
+import android.graphics.SweepGradient
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.LinearInterpolator
@@ -51,6 +52,14 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
     private lateinit var halo: RadialGradient
     private lateinit var core: RadialGradient
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private var ringShader: SweepGradient? = null
+    private var ringCx = -1f
+    private var ringAlpha = 0.3f
+    private var ringSpin = 0f
+    private var wave = 0f
+    private var waveAmt = 0f
+    private var intro = 0f
     private val m = Matrix()
 
     private var t = 0f
@@ -119,12 +128,33 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
         speed += (s - speed) * 0.05f
         spread += (sp - spread) * 0.05f
         rot += dt * speed
+        if (intro < 1f) intro = (intro + dt / 0.9f).coerceAtMost(1f)
+
+        // gradient ring: brighter while active, spins fast while thinking
+        val (ra, rs) = when (mode) {
+            Mode.IDLE -> 0.28f to 0.35f
+            Mode.LISTENING -> 0.85f to 0.9f
+            Mode.THINKING -> 1f to 4.5f
+            Mode.SPEAKING -> 0.7f to 1.4f
+        }
+        ringAlpha += (ra - ringAlpha) * 0.08f
+        ringSpin += dt * (rs * 90f)
+
+        // ripple waves while listening / speaking
+        val wa = when (mode) {
+            Mode.LISTENING -> 0.5f + smoothLevel * 0.5f
+            Mode.SPEAKING -> 0.7f
+            else -> 0f
+        }
+        waveAmt += (wa - waveAmt) * 0.06f
+        wave += dt * (0.35f + energy * 0.5f)
         invalidate()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         last = 0L
+        intro = 0f
         animator.start()
     }
 
@@ -154,7 +184,23 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
             Mode.LISTENING -> 1f + smoothLevel * 0.22f
             else -> 1f + 0.04f * sin(t * 1.6f)
         }
-        val scale = (0.85f + energy * 0.35f) * pulse
+        // soft pop-in when the screen opens
+        val e = 1f - (1f - intro) * (1f - intro) * (1f - intro)
+        val pop = 0.6f + 0.4f * e + 0.06f * sin(e * Math.PI.toFloat())
+        val scale = (0.85f + energy * 0.35f) * pulse * pop
+        paint.alpha = 255
+
+        // ripple waves
+        if (waveAmt > 0.01f) {
+            ring.shader = null
+            for (k in 0..2) {
+                val ph = ((wave + k / 3f) % 1f)
+                ring.color = blobColors[k % 3]
+                ring.alpha = ((1f - ph) * (1f - ph) * 150 * waveAmt).toInt()
+                ring.strokeWidth = base * 0.025f * (1.4f - ph)
+                canvas.drawCircle(cx, cy, base * scale * (1.05f + ph * 0.9f), ring)
+            }
+        }
 
         // big soft halo
         drawGlow(canvas, halo, cx, cy, base * 2.2f * scale)
@@ -169,6 +215,28 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
             val br = base * scale * (1.0f + 0.15f * sin(t * 1.3f + i * 1.7f))
             drawGlow(canvas, shaders[i], bx, by, br)
         }
+
+        // rotating Gemini gradient ring
+        if (ringCx != cx || ringShader == null) {
+            ringShader = SweepGradient(
+                cx, cy,
+                intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK, Color.parseColor("#36C5F0"), Ui.GEMINI_BLUE),
+                null
+            )
+            ringCx = cx
+        }
+        val rs = ringShader!!
+        m.setRotate(ringSpin, cx, cy)
+        rs.setLocalMatrix(m)
+        ring.shader = rs
+        val rr = base * scale * 1.12f
+        ring.alpha = (ringAlpha * 70 * e).toInt()          // soft glow
+        ring.strokeWidth = base * 0.12f
+        canvas.drawCircle(cx, cy, rr, ring)
+        ring.alpha = (ringAlpha * 230 * e).toInt()         // crisp line
+        ring.strokeWidth = base * 0.022f
+        canvas.drawCircle(cx, cy, rr, ring)
+        ring.shader = null
 
         // bright center
         drawGlow(canvas, core, cx, cy, base * (0.45f + energy * 0.25f) * pulse)

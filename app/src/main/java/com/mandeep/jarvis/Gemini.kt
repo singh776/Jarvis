@@ -9,7 +9,7 @@ import java.net.URL
 import java.net.URLEncoder
 
 /** An HTTP error from Gemini, with its status code. */
-class GeminiException(val code: Int, message: String) : RuntimeException(message)
+class GeminiException(val code: Int, message: String, val reason: String = "") : RuntimeException(message)
 
 /** Small Google Gemini REST client (no extra libraries). */
 object Gemini {
@@ -27,9 +27,8 @@ object Gemini {
     val MODEL_CHOICES = listOf(
         "gemini-flash-latest" to "Gemini Flash (latest)",
         "gemini-flash-lite-latest" to "Gemini Flash-Lite (latest)",
-        "gemini-2.5-flash" to "Gemini 2.5 Flash",
-        "gemini-2.5-flash-lite" to "Gemini 2.5 Flash-Lite",
-        "gemini-2.5-pro" to "Gemini 2.5 Pro"
+        "gemini-pro-latest" to "Gemini Pro (latest)",
+        "gemini-3.6-flash" to "Gemini 3.6 Flash"
     )
 
     /** Waits between retries when the server is busy: 1s, 2s, 4s. */
@@ -49,8 +48,11 @@ object Gemini {
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("jarvis", Context.MODE_PRIVATE)
 
-    fun apiKey(ctx: Context): String =
-        prefs(ctx).getString("api_key", "")?.trim() ?: ""
+    fun apiKey(ctx: Context): String = cleanKey(prefs(ctx).getString("api_key", "") ?: "")
+
+    /** Removes spaces, new lines, quotes and invisible characters that sneak in when pasting. */
+    fun cleanKey(raw: String): String =
+        raw.filter { it.code in 33..126 && it != '"' && it != '\'' }
 
     fun model(ctx: Context): String =
         prefs(ctx).getString("model", "")?.trim().takeUnless { it.isNullOrEmpty() } ?: DEFAULT_MODEL
@@ -83,6 +85,7 @@ object Gemini {
             try {
                 return call(key, main, system, contents, json)
             } catch (e: GeminiException) {
+                if (e.code == 404) { last = e; break } // model gone → go straight to the backup model
                 if (e.code !in BUSY_CODES) throw e
                 last = e
                 if (attempt < RETRY_DELAYS_MS.size) {
@@ -109,7 +112,17 @@ object Gemini {
         throw last ?: GeminiException(503, "busy")
     }
 
-    private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String {
+    private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String =
+        try {
+            call(key, model, system, contents, json, keyInUrl = false)
+        } catch (e: GeminiException) {
+            // Some keys are only accepted as ?key=… — try that once before giving up.
+            if (e.code == 401 || e.code == 403) call(key, model, system, contents, json, keyInUrl = true) else throw e
+        }
+
+    private fun call(
+        key: String, model: String, system: String, contents: JSONArray, json: Boolean, keyInUrl: Boolean
+    ): String {
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", contents)
@@ -117,7 +130,8 @@ object Gemini {
 
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +
-                URLEncoder.encode(model, "UTF-8") + ":generateContent"
+                URLEncoder.encode(model, "UTF-8") + ":generateContent" +
+                (if (keyInUrl) "?key=" + URLEncoder.encode(key, "UTF-8") else "")
         )
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -125,19 +139,12 @@ object Gemini {
             readTimeout = 60000
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("x-goog-api-key", key)
+            if (!keyInUrl) setRequestProperty("x-goog-api-key", key)
         }
         try {
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-            if (code !in 200..299) {
-                val msg = try {
-                    JSONObject(raw).getJSONObject("error").optString("message", raw)
-                } catch (e: Exception) { raw }
-                throw GeminiException(code, "Gemini error $code: ${msg.take(200)}")
-            }
+            val (code, raw) = read(conn)
+            if (code !in 200..299) throw toError(code, raw)
             val parts = JSONObject(raw)
                 .getJSONArray("candidates").getJSONObject(0)
                 .getJSONObject("content").getJSONArray("parts")
@@ -152,6 +159,78 @@ object Gemini {
         }
     }
 
+    /** Reads status + body. Some Android versions throw on a 401 instead of returning it. */
+    private fun read(conn: HttpURLConnection): Pair<Int, String> {
+        val code = try {
+            conn.responseCode
+        } catch (e: IOException) {
+            if (e.message.orEmpty().contains("authentication challenge", true)) 401 else throw e
+        }
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val raw = try { stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "" } catch (e: IOException) { "" }
+        return code to raw
+    }
+
+    /** Turns Google's error JSON into a [GeminiException] with the exact reason. */
+    private fun toError(code: Int, raw: String): GeminiException {
+        var msg = raw
+        var reason = ""
+        try {
+            val err = JSONObject(raw).getJSONObject("error")
+            msg = err.optString("message", raw)
+            reason = err.optString("status", "")
+            val details = err.optJSONArray("details")
+            if (details != null) for (i in 0 until details.length()) {
+                val r = details.optJSONObject(i)?.optString("reason", "").orEmpty()
+                if (r.isNotEmpty()) { reason = r; break }
+            }
+        } catch (e: Exception) {}
+        return GeminiException(code, "Gemini error $code: ${msg.take(200)}", reason)
+    }
+
+    /**
+     * Checks a key the same way the app uses it (blocking — run off the main thread).
+     * Returns (ok, text to show) and, when it works, the Gemini models this key can use.
+     */
+    fun testKey(rawKey: String): Triple<Boolean, String, List<String>> {
+        val key = cleanKey(rawKey)
+        if (key.isEmpty()) return Triple(false, "Key khaali hai.", emptyList())
+        val info = "Key: ${key.take(6)}…${key.takeLast(4)}  (${key.length} akhar)"
+        var lastErr = ""
+        for (inUrl in listOf(false, true)) {
+            val url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200" +
+                (if (inUrl) "&key=" + URLEncoder.encode(key, "UTF-8") else "")
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15000
+                readTimeout = 20000
+                if (!inUrl) setRequestProperty("x-goog-api-key", key)
+            }
+            try {
+                val (code, raw) = read(conn)
+                if (code in 200..299) {
+                    val arr = JSONObject(raw).optJSONArray("models") ?: JSONArray()
+                    val names = ArrayList<String>()
+                    for (i in 0 until arr.length()) {
+                        val m = arr.getJSONObject(i)
+                        val methods = m.optJSONArray("supportedGenerationMethods")?.toString().orEmpty()
+                        val id = m.optString("name").removePrefix("models/")
+                        if (id.startsWith("gemini") && methods.contains("generateContent")) names.add(id)
+                    }
+                    return Triple(true, "✅ Key theek hai!\n$info\nTareeka: " +
+                        (if (inUrl) "?key=" else "x-goog-api-key header") + "\nModels: ${names.size}", names)
+                }
+                val e = toError(code, raw)
+                lastErr = "❌ Google ne ${e.code} dittaa" + (if (e.reason.isNotEmpty()) " (${e.reason})" else "") +
+                    "\n\n${e.message?.removePrefix("Gemini error ${e.code}: ")}"
+            } catch (e: IOException) {
+                return Triple(false, "❌ Internet nahi: ${e.javaClass.simpleName}\n$info", emptyList())
+            } finally {
+                conn.disconnect()
+            }
+        }
+        return Triple(false, "$lastErr\n\n$info", emptyList())
+    }
+
     /** A short, correct message for the user for any error from [generate]. */
     fun friendlyError(e: Throwable, punjabi: Boolean): String {
         val keyOrNet = if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਜੁੜ ਨਹੀਂ ਸਕਿਆ। ਇੰਟਰਨੈੱਟ ਤੇ API key ਚੈੱਕ ਕਰੋ।"
@@ -160,7 +239,11 @@ object Gemini {
             isBusy(e) ->
                 if (punjabi) "ਸਰਵਰ ਬਿਜ਼ੀ ਹੈ ਸਰ, ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਦੁਬਾਰਾ ਪੁੱਛੋ।"
                 else "Google's server is busy right now, Sir. Please ask again in a moment."
-            e is GeminiException && (e.code == 401 || e.code == 403) -> "$keyOrNet (${e.code})"
+            e is GeminiException && (e.code == 401 || e.code == 403) ->
+                (if (punjabi) "Google ਨੇ API key ਨਹੀਂ ਮੰਨੀ (${e.code}${if (e.reason.isNotEmpty()) " " + e.reason else ""}). " +
+                    "ਸੈਟਿੰਗ → API Key → \"Test key\" ਦਬਾਓ, ਜਾਂ ਨਵੀਂ key ਬਣਾ ਕੇ ਪਾਓ।"
+                else "Google rejected the API key (${e.code}${if (e.reason.isNotEmpty()) " " + e.reason else ""}). " +
+                    "Open Settings → API Key → \"Test key\", or paste a new key.")
             e is GeminiException && e.code == 400 && e.message.orEmpty().contains("API key", true) -> "$keyOrNet (400)"
             e is GeminiException && e.code == 404 ->
                 if (punjabi) "ਇਹ ਮਾਡਲ ਨਹੀਂ ਮਿਲਿਆ। ਸੈਟਿੰਗ → AI ਵਿੱਚ ਮਾਡਲ ਬਦਲੋ।"

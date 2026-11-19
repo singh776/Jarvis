@@ -24,6 +24,13 @@ Is repo vich code push hunde hi **GitHub Actions** aap APK bana dinda hai (3–5
 2. Sab ton upar wali release vich `Jarvis.apk` te tap karo → download.
 3. Install karo (pehli vaar "Install unknown apps" di permission deni paindi hai).
 
+## Nawan v2.4
+- Upar **MOMI** likhya aunda hai.
+- **Auto Listen:** app khuldi hi mic aap chal penda hai, te jawab den ton baad fer sunda hai (Settings → Voice).
+- Gole di nawin animation: ghumda gradient ring, bolan/sunan te lehraan.
+- **Settings → API Key → Test key:** Google naal key check karke asli error dikhaunda hai, te je model key naal nahi chalda taan aap theek model chun lainda hai.
+- 401 te hun sahi message: "Google ਨੇ API key ਨਹੀਂ ਮੰਨੀ".
+
 ## Nawan v2.0
 - **Server busy (503) fix:** Gemini busy hove taan Jarvis aap 1s, 2s, 4s ruk ke dubara koshish karda hai, fer halke **Backup Model** (Flash-Lite) te chala janda hai. Sahi message dikhda hai — "API key check karo" sirf asli key/internet di galti te.
 - **Gemini wargi screen:** neela-jamni-gulabi chamakda gola, chat bubbles, pill input bar, glow wala mic button.

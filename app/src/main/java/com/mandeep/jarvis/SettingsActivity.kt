@@ -420,6 +420,9 @@ class SettingsActivity : Activity() {
                 row("Voice Speed", Glyph.SPEED, iosPink, value = speedLabel(speed), chevron = true) {
                     open(PAGE_SPEED)
                 },
+                row("Auto Listen", Glyph.MIC, iosRed, toggle = prefs.getBoolean("auto_listen", true), onToggle = {
+                    prefs.edit().putBoolean("auto_listen", it).apply()
+                }),
                 row("Keep Listening", Glyph.CHAT, iosGreen, toggle = prefs.getBoolean("keep_talking", true), onToggle = {
                     prefs.edit().putBoolean("keep_talking", it).apply()
                 }),
@@ -427,7 +430,7 @@ class SettingsActivity : Activity() {
                     openSetting(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), "Digital assistant app → Jarvis chuno")
                 }
             ),
-            "Keep Listening: Jarvis sawal puchhe taan aap hi fer sunda hai. Side key lamba dabao te Jarvis khul ke sunna shuru kar dinda hai."
+            "Auto Listen: app khuldi hi mic chal penda hai. Keep Listening: jawab den ton baad aap hi fer sunda hai. Side key lamba dabao te Jarvis khul ke sunna shuru kar dinda hai."
         )
 
         // ---- Appearance
@@ -569,6 +572,7 @@ class SettingsActivity : Activity() {
         section(c, "Gemini API key", listOf(Row(f, false)),
             "Jarvis da dimaag Google Gemini hai. Muft key lao: aistudio.google.com/apikey → \"Create API key\" → copy karke ethe paste karo → Save.")
         section(c, null, listOf(
+            row("Test key", Glyph.CHECK, iosGreen, chevron = true) { testKey() },
             row("Get a free key", Glyph.KEY, iosOrange, chevron = true) {
                 try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey"))) }
                 catch (e: Exception) {}
@@ -577,9 +581,63 @@ class SettingsActivity : Activity() {
         f.post { f.requestFocus() }
     }
 
+    /** Asks Google if the key works, shows the exact answer, and fixes the model if needed. */
+    private fun testKey() {
+        val raw = keyField?.text?.toString() ?: Gemini.apiKey(this)
+        val wait = AlertDialog.Builder(this, Ui.dialogTheme(this))
+            .setTitle("Test key")
+            .setMessage("Google naal check kar riha haan…")
+            .setCancelable(false)
+            .show()
+        Thread {
+            val (ok, text, models) = try {
+                Gemini.testKey(raw)
+            } catch (e: Exception) {
+                Triple(false, "❌ ${e.javaClass.simpleName}: ${e.message}", emptyList<String>())
+            }
+            var note = ""
+            if (ok) {
+                prefs.edit().putString("api_key", Gemini.cleanKey(raw)).apply()
+                if (models.isNotEmpty()) {
+                    val cur = Gemini.model(this)
+                    if (cur !in models) {
+                        val pick = bestModel(models, lite = false)
+                        if (pick != null) {
+                            prefs.edit().putString("model", pick).apply()
+                            note += "\n\nModel '$cur' is key naal nahi chalda → '$pick' set kar ditta."
+                        }
+                    }
+                    val back = Gemini.fallbackModel(this)
+                    if (back !in models) {
+                        val pick = bestModel(models, lite = true)
+                        if (pick != null) prefs.edit().putString("fallback_model", pick).apply()
+                    }
+                }
+            }
+            runOnUiThread {
+                try { wait.dismiss() } catch (e: Exception) {}
+                AlertDialog.Builder(this, Ui.dialogTheme(this))
+                    .setTitle(if (ok) "Key chal rahi hai" else "Key nahi chali")
+                    .setMessage(text + note + (if (ok) "" else
+                        "\n\nHal: aistudio.google.com/apikey te NAWIN key banao, usda naam na badlo, copy karke ethe paste karo."))
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }.start()
+    }
+
+    /** Picks a sensible text model from what the key can use. */
+    private fun bestModel(models: List<String>, lite: Boolean): String? {
+        val wanted = if (lite) listOf("gemini-flash-lite-latest") else listOf("gemini-flash-latest")
+        wanted.firstOrNull { it in models }?.let { return it }
+        val bad = listOf("image", "tts", "audio", "live", "embedding", "vision", "exp", "preview", "thinking")
+        val flash = models.filter { m -> m.contains("flash") && bad.none { m.contains(it) } && m.contains("lite") == lite }
+        return flash.maxOrNull() ?: models.firstOrNull { m -> m.contains("flash") && bad.none { m.contains(it) } }
+    }
+
     private fun saveKey() {
         val f = keyField ?: return
-        prefs.edit().putString("api_key", f.text.toString().trim()).apply()
+        prefs.edit().putString("api_key", Gemini.cleanKey(f.text.toString())).apply()
         Toast.makeText(this, "Saved ✓", Toast.LENGTH_SHORT).show()
         finish()
     }

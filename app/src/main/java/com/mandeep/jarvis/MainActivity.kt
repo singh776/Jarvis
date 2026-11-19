@@ -125,6 +125,36 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         updateLangButton()
         if (!busy && !listening && mode == OrbView.Mode.IDLE) setStatus(idleText())
         tts?.setSpeechRate(voiceSpeed)
+        autoListenSoon()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (showingCrash) return
+        orb.removeCallbacks(autoListenTask)
+        if (listening) {
+            recognizer?.cancel()
+            listening = false
+            dropLiveText()
+            setMode(OrbView.Mode.IDLE)
+            setStatus(idleText())
+        }
+    }
+
+    private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", true)
+
+    private val autoListenTask = Runnable {
+        if (!busy && !listening && mode == OrbView.Mode.IDLE && tts?.isSpeaking != true && hasWindowFocus()) {
+            startListening()
+        }
+    }
+
+    /** Opens the mic by itself when the app comes to the screen (Settings → Auto Listen). */
+    private fun autoListenSoon() {
+        if (!autoListen || brain.apiKey.isEmpty()) return
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        orb.removeCallbacks(autoListenTask)
+        orb.postDelayed(autoListenTask, 700)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -198,7 +228,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         top.addView(langBtn, FrameLayout.LayoutParams(-2, dp(36), Gravity.START or Gravity.CENTER_VERTICAL))
 
         val title = GradientText(this).apply {
-            text = "Jarvis"
+            text = "MOMI"
+            letterSpacing = 0.12f
             textSize = 24f
             typeface = Ui.medium
             gravity = Gravity.CENTER
@@ -478,7 +509,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             say(
                 if (punjabi && punjabiVoice) "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਸਰ! ਮੈਂ ਜਾਰਵਿਸ ਹਾਂ। ਗੋਲੇ ਨੂੰ ਛੂਹੋ ਤੇ ਬੋਲੋ।"
                 else "Sat Sri Akal, Sir. Jarvis online. Tap the orb and speak.",
-                listenAfter = false
+                listenAfter = autoListen
             )
         }
     }
@@ -626,14 +657,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val info = phoneInfo()
 
         Thread {
+            var failed = false
             val result: Reply = try {
                 brain.ask(text, pa, paVoice, info)
             } catch (e: Exception) {
+                failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
             }
             runOnUiThread {
                 busy = false
-                act(text, result, pa, paVoice, fromVoice)
+                // don't keep listening in a loop when something went wrong
+                act(text, result, pa, paVoice, fromVoice && !failed)
             }
         }.start()
     }
@@ -685,7 +719,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 val spoken = listOfNotNull(result.say.takeIf { it.isNotBlank() }, res.message).joinToString(" ")
                 val type = result.action?.optString("type", "none") ?: "none"
                 // Keep the conversation going if Jarvis asked a question (and we didn't leave the app).
-                val again = fromVoice && type == "none" && spoken.trim().let { it.endsWith("?") || it.endsWith("？") }
+                // Keep the conversation going (Settings → Keep Listening)
+                val again = fromVoice && type == "none"
                 say(spoken.ifBlank { "…" }, listenAfter = again)
             }
         }
