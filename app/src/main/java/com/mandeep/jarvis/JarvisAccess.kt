@@ -83,30 +83,40 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
 
     // ------------------------------------------- mini panel ("Singh AI" popup)
 
-    private var mini: android.widget.LinearLayout? = null
-    private var miniOrb: OrbView? = null
+    private var mini: android.view.View? = null
+    private var miniWave: WaveBar? = null
     private var miniText: TextView? = null
     private var miniHint: TextView? = null
 
-    /** Small Gemini-style popup at the top of the screen, over any app. */
+    /**
+     * Gemini-style popup at the bottom of the screen, over any app (the app itself stays closed):
+     * glowing gradient edge, what you said / the answer, and a flowing voice bar.
+     */
     fun showMini(text: String, hint: String, mode: OrbView.Mode) {
         main.post {
             val wm = getSystemService(WindowManager::class.java) ?: return@post
             val d = resources.displayMetrics.density
             val p = Ui.palette(this)
             if (mini == null) {
-                val box = android.widget.LinearLayout(this).apply {
-                    orientation = android.widget.LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    val pad = (12 * d).toInt()
-                    setPadding(pad, pad, pad / 2, pad)
-                    background = Ui.rounded(
-                        if (p.dark) Color.parseColor("#F21C1C1E") else Color.parseColor("#F7FFFFFF"),
-                        26 * d, p.separator, if (p.dark) 0 else 1
-                    )
-                    elevation = 12 * d
+                val radius = 30 * d
+                // gradient "glow" edge around the card
+                val edge = android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                    intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK)
+                ).apply { cornerRadius = radius }
+                val inner = Ui.rounded(if (p.dark) Color.parseColor("#1C1C1E") else Color.WHITE, radius - 2 * d)
+                val bg = android.graphics.drawable.LayerDrawable(arrayOf(edge, inner)).apply {
+                    val inset = (2 * d).toInt()
+                    setLayerInset(1, inset, inset, inset, inset)
+                }
+                val card = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
+                    background = bg
+                    elevation = 16 * d
+                    val pad = (16 * d).toInt()
+                    setPadding(pad, (12 * d).toInt(), (8 * d).toInt(), (10 * d).toInt())
                     setOnClickListener {
-                        // open the full app
+                        // tap → open the full app
                         WakeService.instance?.endSession(false)
                         startActivity(
                             android.content.Intent(this@JarvisAccess, MainActivity::class.java)
@@ -114,59 +124,68 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
                         )
                     }
                 }
-                val orb = OrbView(this).apply { dark = p.dark; isClickable = false }
-                box.addView(orb, android.widget.LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt()))
-                val texts = android.widget.LinearLayout(this).apply {
-                    orientation = android.widget.LinearLayout.VERTICAL
-                    setPadding((10 * d).toInt(), 0, (4 * d).toInt(), 0)
+                // header: ✦ Singh AI ............ ✕
+                val head = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
                 }
-                val t1 = Ui.text(this, "", 16f, p.text, Ui.medium).apply { maxLines = 5 }
-                val t2 = Ui.text(this, "", 12f, p.muted).apply { maxLines = 1 }
-                texts.addView(t1)
-                texts.addView(t2)
-                box.addView(texts, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
-                val close = GlyphView(this, Glyph.CLOSE, p.muted).apply {
-                    glyphScale = 0.42f
+                head.addView(GlyphView(this, Glyph.SPARKLE, Ui.GEMINI_PURPLE).apply { glyphScale = 0.8f },
+                    android.widget.LinearLayout.LayoutParams((18 * d).toInt(), (18 * d).toInt()))
+                val t2 = Ui.text(this, "Singh AI", 13f, p.muted, Ui.medium).apply { setPadding((8 * d).toInt(), 0, 0, 0) }
+                head.addView(t2, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                head.addView(GlyphView(this, Glyph.CLOSE, p.muted).apply {
+                    glyphScale = 0.4f
                     isClickable = true
                     setOnClickListener { WakeService.instance?.endSession(true) }
+                }, android.widget.LinearLayout.LayoutParams((36 * d).toInt(), (36 * d).toInt()))
+                card.addView(head)
+
+                val t1 = Ui.text(this, "", 19f, p.text).apply {
+                    maxLines = 6
+                    setPadding(0, (2 * d).toInt(), (8 * d).toInt(), (6 * d).toInt())
+                    setLineSpacing(2 * d, 1f)
                 }
-                box.addView(close, android.widget.LinearLayout.LayoutParams((40 * d).toInt(), (40 * d).toInt()))
+                card.addView(t1)
+                val wave = WaveBar(this)
+                card.addView(wave, android.widget.LinearLayout.LayoutParams(-1, (30 * d).toInt()).apply {
+                    marginEnd = (8 * d).toInt()
+                })
 
                 val lp = WindowManager.LayoutParams(
-                    resources.displayMetrics.widthPixels - (20 * d).toInt(),
+                    resources.displayMetrics.widthPixels - (16 * d).toInt(),
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                     PixelFormat.TRANSLUCENT
                 ).apply {
-                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                    y = (44 * d).toInt()
+                    gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                    y = (28 * d).toInt()
                 }
                 try {
-                    wm.addView(box, lp)
-                    mini = box; miniOrb = orb; miniText = t1; miniHint = t2
-                    box.alpha = 0f
-                    box.translationY = -40 * d
-                    box.animate().alpha(1f).translationY(0f).setDuration(260).start()
+                    wm.addView(card, lp)
+                    mini = card; miniWave = wave; miniText = t1; miniHint = t2
+                    card.alpha = 0f
+                    card.translationY = 80 * d
+                    card.animate().alpha(1f).translationY(0f).setDuration(280)
+                        .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
                 } catch (e: Exception) {
                     mini = null
                     return@post
                 }
             }
             miniText?.text = text
-            miniHint?.text = hint
-            miniHint?.visibility = if (hint.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
-            miniOrb?.mode = mode
+            miniHint?.text = if (hint.isEmpty()) "Singh AI" else hint
+            miniWave?.mode = mode
         }
     }
 
-    fun miniLevel(level: Float) { main.post { miniOrb?.level = level } }
+    fun miniLevel(level: Float) { main.post { miniWave?.level = level } }
 
     fun hideMini() {
         val v = mini ?: return
-        mini = null; miniOrb = null; miniText = null; miniHint = null
+        mini = null; miniWave = null; miniText = null; miniHint = null
         main.post {
-            v.animate().alpha(0f).translationY(-30 * resources.displayMetrics.density).setDuration(200).withEndAction {
+            v.animate().alpha(0f).translationY(60 * resources.displayMetrics.density).setDuration(200).withEndAction {
                 try { getSystemService(WindowManager::class.java)?.removeView(v) } catch (e: Exception) {}
             }.start()
         }

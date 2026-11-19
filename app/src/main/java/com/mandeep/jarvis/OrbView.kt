@@ -176,47 +176,50 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
         super.onDraw(canvas)
         val cx = width / 2f
         val cy = height / 2f
-        val base = min(width, height) * 0.30f
+        val half = min(width, height) / 2f
+        // everything stays inside the view and centered
+        val base = half * 0.44f
         if (base <= 0f) return
+        val limit = half * 0.98f
 
         val pulse = when (mode) {
             Mode.SPEAKING -> 1f + 0.10f * (0.5f + 0.5f * sin(t * 7f)) * (0.6f + 0.4f * sin(t * 3.1f))
-            Mode.LISTENING -> 1f + smoothLevel * 0.22f
-            else -> 1f + 0.04f * sin(t * 1.6f)
+            Mode.LISTENING -> 1f + smoothLevel * 0.20f
+            else -> 1f + 0.035f * sin(t * 1.6f)
         }
         // soft pop-in when the screen opens
         val e = 1f - (1f - intro) * (1f - intro) * (1f - intro)
-        val pop = 0.6f + 0.4f * e + 0.06f * sin(e * Math.PI.toFloat())
-        val scale = (0.85f + energy * 0.35f) * pulse * pop
+        val pop = 0.6f + 0.4f * e + 0.05f * sin(e * Math.PI.toFloat())
+        val scale = (0.9f + energy * 0.25f) * pulse * pop
         paint.alpha = 255
 
-        // ripple waves
+        // big soft halo (never past the edge)
+        drawGlow(canvas, halo, cx, cy, min(base * 2.0f * scale, limit))
+
+        // ripple waves while listening / speaking
         if (waveAmt > 0.01f) {
             ring.shader = null
             for (k in 0..2) {
                 val ph = ((wave + k / 3f) % 1f)
+                val rr = min(base * scale * (1.15f + ph * 0.75f), limit - base * 0.03f)
                 ring.color = blobColors[k % 3]
-                ring.alpha = ((1f - ph) * (1f - ph) * 150 * waveAmt).toInt()
-                ring.strokeWidth = base * 0.025f * (1.4f - ph)
-                canvas.drawCircle(cx, cy, base * scale * (1.05f + ph * 0.9f), ring)
+                ring.alpha = ((1f - ph) * (1f - ph) * 140 * waveAmt).toInt()
+                ring.strokeWidth = base * 0.022f * (1.4f - ph)
+                canvas.drawCircle(cx, cy, rr, ring)
             }
         }
 
-        // big soft halo
-        drawGlow(canvas, halo, cx, cy, base * 2.2f * scale)
-
-        // drifting color blobs
-        val angle = rot
+        // color blobs, kept close to the center
         for (i in shaders.indices) {
-            val ang = phases[i] + angle * dirs[i]
-            val orbit = base * spread * (0.7f + 0.3f * sin(t * 0.7f + i))
+            val ang = phases[i] + rot * dirs[i]
+            val orbit = base * spread * 0.45f * (0.7f + 0.3f * sin(t * 0.7f + i))
             val bx = cx + cos(ang) * orbit
-            val by = cy + sin(ang) * orbit * 0.85f
-            val br = base * scale * (1.0f + 0.15f * sin(t * 1.3f + i * 1.7f))
+            val by = cy + sin(ang) * orbit
+            val br = base * scale * (0.95f + 0.1f * sin(t * 1.3f + i * 1.7f))
             drawGlow(canvas, shaders[i], bx, by, br)
         }
 
-        // rotating Gemini gradient ring
+        // rotating gradient ring
         if (ringCx != cx || ringShader == null) {
             ringShader = SweepGradient(
                 cx, cy,
@@ -229,17 +232,38 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
         m.setRotate(ringSpin, cx, cy)
         rs.setLocalMatrix(m)
         ring.shader = rs
-        val rr = base * scale * 1.12f
-        ring.alpha = (ringAlpha * 70 * e).toInt()          // soft glow
-        ring.strokeWidth = base * 0.12f
-        canvas.drawCircle(cx, cy, rr, ring)
-        ring.alpha = (ringAlpha * 230 * e).toInt()         // crisp line
-        ring.strokeWidth = base * 0.022f
-        canvas.drawCircle(cx, cy, rr, ring)
+        val ringR = base * scale * 1.08f
+        ring.alpha = (ringAlpha * 60 * e).toInt()
+        ring.strokeWidth = base * 0.10f
+        canvas.drawCircle(cx, cy, ringR, ring)
+        ring.alpha = (ringAlpha * 220 * e).toInt()
+        ring.strokeWidth = base * 0.02f
+        canvas.drawCircle(cx, cy, ringR, ring)
         ring.shader = null
 
-        // bright center
-        drawGlow(canvas, core, cx, cy, base * (0.45f + energy * 0.25f) * pulse)
+        // soft white light behind the star
+        drawGlow(canvas, core, cx, cy, base * (0.55f + energy * 0.2f) * pulse)
         paint.shader = null
+
+        // Gemini-style sparkle in the middle: gradient-filled, slowly turning, pulsing with the voice
+        val starR = base * 0.42f * scale
+        star.reset()
+        Glyphs.star4(star, 0f, 0f, starR)
+        canvas.save()
+        canvas.translate(cx, cy)
+        canvas.rotate(ringSpin * 0.15f)
+        m.setRotate(-ringSpin * 0.6f)
+        rs.setLocalMatrix(m)
+        starPaint.shader = SweepGradient(
+            0f, 0f,
+            intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK, Color.parseColor("#36C5F0"), Ui.GEMINI_BLUE),
+            null
+        ).also { it.setLocalMatrix(m) }
+        starPaint.alpha = (255 * e).toInt()
+        canvas.drawPath(star, starPaint)
+        canvas.restore()
     }
+
+    private val star = android.graphics.Path()
+    private val starPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 }

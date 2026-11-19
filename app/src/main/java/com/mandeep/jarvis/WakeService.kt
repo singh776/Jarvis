@@ -86,6 +86,11 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_SESSION) {
+            // side key: show the popup and listen right away
+            main.post { beginSession() }
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_STOP) {
             prefs.edit().putBoolean("wake_word", false).apply()
             stopSelf()
@@ -181,11 +186,22 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
 
     private var onDeviceFailed = false
 
-    /** Quietly waits for "Singh AI". */
+    private fun beginSession() {
+        if (JarvisAccess.instance == null) return
+        main.removeCallbacksAndMessages(WAKE_TOKEN)
+        stopRecognizer()
+        tts?.stop()
+        commandMisses = 0
+        brain.clearHistory() // fresh chat each time (long-term memory stays)
+        listenForCommand()
+    }
+
+    /** Quietly waits for "Singh AI" (only when "Hey Singh AI" is switched on). */
     fun listenForWake() {
         main.removeCallbacksAndMessages(WAKE_TOKEN)
         if (state == State.BUSY || state == State.COMMAND) return
         state = State.WAKE
+        if (!enabled(this)) { stopRecognizer(); return }
         if (!canListen()) { stopRecognizer(); return }
         val rec = makeRecognizer() ?: return
         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -325,11 +341,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         val rest = if (end >= 0) heard.substring(end).trim(' ', ',', '.', '!', '?') else ""
         stopRecognizer()
         if (JarvisAccess.instance == null) {
-            // the popup needs Screen Control — open the app instead (may be blocked in the background)
-            try {
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    .setAction(Intent.ACTION_ASSIST))
-            } catch (e: Exception) {}
+            // the popup needs Screen Control; never pop the whole app open by itself
             state = State.WAKE
             restartSoon(3000)
             return
@@ -432,6 +444,11 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         tts?.stop()
         stopRecognizer()
         state = State.WAKE
+        if (!enabled(this)) {
+            // only opened for one side-key question → close the service again
+            main.postDelayed({ if (state == State.WAKE && !enabled(this)) stopSelf() }, 400)
+            return
+        }
         restartSoon(700)
     }
 
@@ -451,13 +468,14 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         private const val CHANNEL = "wake"
         private const val NOTIF_ID = 11
         private const val ACTION_STOP = "com.mandeep.jarvis.STOP_WAKE"
+        private const val ACTION_SESSION = "com.mandeep.jarvis.SESSION"
         private val WAKE_TOKEN = Any()
 
         private val WAKE = Regex(
-            "(singh|sing|sinh|sink|seeing|ਸਿੰਘ|सिंह|सिंग)\\s*[-.]?\\s*(a\\.?\\s?i\\b|ai\\b|ay\\b|eye\\b|ਏ\\s?ਆਈ|ਏਆਈ|ए\\s?आई|एआई)"
+            "(?<![a-z])(singh|sing|sinh|sink|ਸਿੰਘ|सिंह|सिंग)\\s*[-.]?\\s*(a\\.?\\s?i\\b|ai\\b|ay\\b|eye\\b|ਏ\\s?ਆਈ|ਏਆਈ|ए\\s?आई|एआई)"
         )
 
-        fun enabled(c: Context) = c.getSharedPreferences("jarvis", Context.MODE_PRIVATE).getBoolean("wake_word", true)
+        fun enabled(c: Context) = c.getSharedPreferences("jarvis", Context.MODE_PRIVATE).getBoolean("wake_word", false)
 
         /** Starts listening for "Singh AI" (call while the app is on screen). */
         fun start(c: Context) {
@@ -472,6 +490,14 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
 
         fun stop(c: Context) {
             try { c.stopService(Intent(c, WakeService::class.java)) } catch (e: Exception) {}
+        }
+
+        /** Side key: show the popup and listen once (works even when "Hey Singh AI" is off). */
+        fun startSession(c: Context) {
+            try {
+                val i = Intent(c, WakeService::class.java).setAction(ACTION_SESSION)
+                if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i) else c.startService(i)
+            } catch (e: Exception) {}
         }
 
         /** The app tells the service when it is on screen, so they don't both use the mic. */

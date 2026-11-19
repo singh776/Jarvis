@@ -400,3 +400,75 @@ class GradientText(context: Context) : android.widget.TextView(context) {
         )
     }
 }
+
+/** Gemini-style flowing gradient bar: thin when idle, bounces with your voice, shimmers while thinking. */
+class WaveBar(context: Context) : View(context) {
+    var mode: OrbView.Mode = OrbView.Mode.IDLE
+    var level = 0f
+        set(v) { field = v.coerceIn(0f, 1f) }
+
+    private var t = 0f
+    private var amp = 0.2f
+    private var smooth = 0f
+    private var last = 0L
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val r = RectF()
+    private val mtx = android.graphics.Matrix()
+    private var shader: LinearGradient? = null
+    private var shaderW = -1
+
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 1000
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener {
+            val now = System.nanoTime()
+            val dt = if (last == 0L) 0.016f else ((now - last) / 1e9f).coerceIn(0f, 0.05f)
+            last = now
+            t += dt
+            smooth += (level - smooth) * 0.25f
+            val target = when (mode) {
+                OrbView.Mode.LISTENING -> 0.35f + smooth * 0.65f
+                OrbView.Mode.SPEAKING -> 0.55f + 0.35f * (0.5f + 0.5f * sin(t * 9f)) * (0.6f + 0.4f * sin(t * 3.7f))
+                OrbView.Mode.THINKING -> 0.35f + 0.1f * sin(t * 4f)
+                OrbView.Mode.IDLE -> 0.18f
+            }
+            amp += (target - amp) * 0.18f
+            invalidate()
+        }
+    }
+
+    init {
+        setLayerType(LAYER_TYPE_SOFTWARE, null) // needed for the soft blur glow
+        glow.maskFilter = android.graphics.BlurMaskFilter(18f * resources.displayMetrics.density / 3f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); last = 0L; animator.start() }
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        if (shader == null || shaderW != width) {
+            shader = LinearGradient(
+                0f, 0f, w, 0f,
+                intArrayOf(Ui.GEMINI_BLUE, Ui.GEMINI_PURPLE, Ui.GEMINI_PINK, Color.parseColor("#36C5F0"), Ui.GEMINI_BLUE),
+                null, Shader.TileMode.MIRROR
+            )
+            shaderW = width
+        }
+        val sh = shader!!
+        val speed = if (mode == OrbView.Mode.THINKING) 1.2f else 0.35f
+        mtx.setTranslate((t * speed * w) % (2 * w), 0f)
+        sh.setLocalMatrix(mtx)
+        val bh = (h * 0.55f * amp).coerceAtLeast(h * 0.08f)
+        r.set(h * 0.3f, (h - bh) / 2f, w - h * 0.3f, (h + bh) / 2f)
+        glow.shader = sh
+        glow.alpha = 150
+        canvas.drawRoundRect(r, bh / 2f, bh / 2f, glow)
+        paint.shader = sh
+        canvas.drawRoundRect(r, bh / 2f, bh / 2f, paint)
+    }
+}
