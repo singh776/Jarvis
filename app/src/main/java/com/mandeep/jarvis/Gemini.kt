@@ -112,21 +112,40 @@ object Gemini {
         throw last ?: GeminiException(503, "busy")
     }
 
-    private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String =
+    /** Models that refused "no thinking" — we stop asking them for it. */
+    private val thinkingRequired = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String {
+        // Skip the slow "thinking" step on Flash models so answers come back faster.
+        val fast = model.contains("flash") && model !in thinkingRequired
+        return try {
+            callKey(key, model, system, contents, json, fast)
+        } catch (e: GeminiException) {
+            if (fast && e.code == 400 && e.message.orEmpty().contains("thinking", true)) {
+                thinkingRequired.add(model)
+                callKey(key, model, system, contents, json, false)
+            } else throw e
+        }
+    }
+
+    private fun callKey(key: String, model: String, system: String, contents: JSONArray, json: Boolean, fast: Boolean): String =
         try {
-            call(key, model, system, contents, json, keyInUrl = false)
+            call(key, model, system, contents, json, keyInUrl = false, fast = fast)
         } catch (e: GeminiException) {
             // Some keys are only accepted as ?key=… — try that once before giving up.
-            if (e.code == 401 || e.code == 403) call(key, model, system, contents, json, keyInUrl = true) else throw e
+            if (e.code == 401 || e.code == 403) call(key, model, system, contents, json, keyInUrl = true, fast = fast) else throw e
         }
 
     private fun call(
-        key: String, model: String, system: String, contents: JSONArray, json: Boolean, keyInUrl: Boolean
+        key: String, model: String, system: String, contents: JSONArray, json: Boolean, keyInUrl: Boolean, fast: Boolean
     ): String {
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", contents)
-        if (json) body.put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+        val gen = JSONObject()
+        if (json) gen.put("responseMimeType", "application/json")
+        if (fast) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        if (gen.length() > 0) body.put("generationConfig", gen)
 
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +

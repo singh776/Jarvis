@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.SearchManager
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
@@ -38,7 +39,7 @@ data class ActionResult(
 )
 
 /** Carries out the phone action the brain asked for. */
-class Actions(private val activity: Activity) {
+class Actions(private val activity: Context) {
 
     private fun p(pa: Boolean, punjabi: String, english: String) = if (pa) punjabi else english
 
@@ -80,7 +81,11 @@ class Actions(private val activity: Activity) {
 
     private fun msg(s: String?) = ActionResult(message = s)
 
-    private fun start(intent: Intent) = activity.startActivity(intent)
+    private fun start(intent: Intent) {
+        // From the floating mini panel (not an Activity) a new task is needed.
+        if (activity !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.startActivity(intent)
+    }
 
     private fun view(uri: String): String? {
         start(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
@@ -406,7 +411,7 @@ class Actions(private val activity: Activity) {
             ?: return p(pa, "ਪਹਿਲਾਂ ⚙ ਵਿੱਚ 'ਸਕਰੀਨ ਕੰਟਰੋਲ' ਚਾਲੂ ਕਰੋ।", "Turn on Screen control in ⚙ first.")
         if (cmd == "home" || cmd == "lock" || cmd == "screenshot" || cmd == "notifications" ||
             cmd == "quick_settings" || cmd == "recents"
-        ) activity.moveTaskToBack(true)
+        ) (activity as? Activity)?.moveTaskToBack(true)
         svc.globalLater(cmd, 500)
         return null
     }

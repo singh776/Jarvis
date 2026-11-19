@@ -420,6 +420,10 @@ class SettingsActivity : Activity() {
                 row("Voice Speed", Glyph.SPEED, iosPink, value = speedLabel(speed), chevron = true) {
                     open(PAGE_SPEED)
                 },
+                row("Hey Singh AI", Glyph.SPARKLE, iosIndigo, toggle = WakeService.enabled(this), onToggle = {
+                    prefs.edit().putBoolean("wake_word", it).apply()
+                    if (it) WakeService.start(this) else WakeService.stop(this)
+                }),
                 row("Auto Listen", Glyph.MIC, iosRed, toggle = prefs.getBoolean("auto_listen", true), onToggle = {
                     prefs.edit().putBoolean("auto_listen", it).apply()
                 }),
@@ -430,7 +434,7 @@ class SettingsActivity : Activity() {
                     openSetting(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), "Digital assistant app → Singh AI chuno")
                 }
             ),
-            "Auto Listen: app khuldi hi mic chal penda hai. Keep Listening: jawab den ton baad aap hi fer sunda hai. Side key lamba dabao te Singh AI khul ke sunna shuru kar dinda hai."
+            "Hey Singh AI: screen on hove taan \"Singh AI\" kaho — upar chhota popup aunda, app nahi khuldi, sun ke jawab dinda te kamm karda. (Screen Control ON chahida; thodi battery khaanda hai.) Auto Listen: app khuldi hi mic chal penda hai. Keep Listening: jawab den ton baad aap hi fer sunda hai. Side key lamba dabao te Singh AI khul ke sunna shuru kar dinda hai."
         )
 
         // ---- Appearance

@@ -103,6 +103,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun startUp() {
+        brain.clearHistory() // every time the app starts: fresh chat (long-term memory stays)
         buildUi()
         setStatus(idleText())
         tts = TextToSpeech(this, this)
@@ -136,12 +137,43 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         updateLangButton()
         if (!busy && !listening && mode == OrbView.Mode.IDLE) setStatus(idleText())
         tts?.setSpeechRate(voiceSpeed)
+        // been away a while (and not coming back from camera / photos / screen) → fresh chat
+        val away = System.currentTimeMillis() - lastPausedAt
+        if (lastPausedAt > 0 && away > 2 * 60_000 && !keepChatOnce && !busy) newConversation()
+        keepChatOnce = false
+        WakeService.setAppVisible(true)
+        WakeService.start(this)
+        askNotificationsOnce()
         autoListenSoon()
+    }
+
+    private var lastPausedAt = 0L
+    private var keepChatOnce = false
+
+    /** Clears the screen and the short chat history. Long-term memory (Settings → Memory) stays. */
+    private fun newConversation() {
+        brain.clearHistory()
+        messages.clear()
+        liveUserBubble = null
+        thinkingAnim?.cancel(); thinkingAnim = null; thinkingBubble = null
+        if (::chat.isInitialized) chat.removeAllViews()
+        attachment = null
+        refreshAttachChip()
+    }
+
+    private fun askNotificationsOnce() {
+        if (android.os.Build.VERSION.SDK_INT < 33 || prefs.getBoolean("asked_notif", false)) return
+        if (!WakeService.enabled(this)) return
+        prefs.edit().putBoolean("asked_notif", true).apply()
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 31)
     }
 
     override fun onPause() {
         super.onPause()
         if (showingCrash) return
+        lastPausedAt = System.currentTimeMillis()
+        WakeService.setAppVisible(false)
         orb.removeCallbacks(autoListenTask)
         if (listening) {
             recognizer?.cancel()
@@ -184,7 +216,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     /** Opened from the side key / "Digital assistant" gesture: start listening right away. */
     private fun handleAssist(i: Intent?) {
-        if (i?.action == Intent.ACTION_ASSIST) orb.postDelayed({ startListening() }, 400)
+        if (i?.action == Intent.ACTION_ASSIST) {
+            if (!i.hasExtra(EXTRA_SCREENSHOT)) newConversation()
+            orb.postDelayed({ startListening() }, 400)
+        }
     }
 
     // ===================================================================== UI
@@ -626,6 +661,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf(other))
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            // stop listening sooner after you finish talking → faster answers
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
         listening = true
         setMode(OrbView.Mode.LISTENING)
         setStatus(if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ… ਬੋਲੋ" else "Listening…")
@@ -998,6 +1036,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun handleScreenshot(i: Intent?) {
         if (i == null || !i.hasExtra(EXTRA_SCREENSHOT)) return
+        keepChatOnce = true
         val path = i.getStringExtra(EXTRA_SCREENSHOT).orEmpty()
         i.removeExtra(EXTRA_SCREENSHOT)
         if (path.isEmpty()) {
@@ -1013,6 +1052,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        keepChatOnce = true
         if (requestCode != REQ_CAMERA && requestCode != REQ_PHOTO && requestCode != REQ_FILE) return
         val camUri = prefs.getString("camera_uri", "").orEmpty().takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }
         if (resultCode != RESULT_OK) {
@@ -1062,7 +1102,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_MIC) {
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startListening()
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                WakeService.start(this)
+                startListening()
+            }
             else setStatus("Mic di permission bina main sun nahi sakda")
         }
     }

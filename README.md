@@ -24,6 +24,11 @@ Is repo vich code push hunde hi **GitHub Actions** aap APK bana dinda hai (3–5
 2. Sab ton upar wali release vich `Jarvis.apk` te tap karo → download.
 3. Install karo (pehli vaar "Install unknown apps" di permission deni paindi hai).
 
+## Nawan v2.7
+- **"Singh AI" bolo — app band hove taan vi:** screen on hove taan "Singh AI" kaho. Upar chhota popup aunda (Gemini wangu), puri app nahi khuldi. Gall sun ke jawab dinda te kamm karda (app kholna, WhatsApp, call…). Popup te tap = puri app. ✕ = band. (Settings → Voice → Hey Singh AI; Screen Control ON chahida.)
+- **Har vaar nawin chat:** app dubara kholo (2 minute baad ja side key naal) taan screen saaf, par Memory vali gallan yaad rehndiyan.
+- **Tez jawab:** Flash model da "thinking" band, te gall khatam hon ton jaldi mic band.
+
 ## Nawan v2.6
 - **"+" button (Gemini wangu):** Camera · Photos · Screen · Files.
   - Photo khicho ja chuno, ja PDF/file pao, te puchho: "ki likhya?", "Punjabi vich translate karo", "eh ki hai?"

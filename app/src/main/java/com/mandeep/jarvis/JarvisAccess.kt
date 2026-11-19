@@ -54,6 +54,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         stopRequested = true
         hidePill()
         stopScreenShare()
+        hideMini()
         tts?.shutdown()
         if (instance === this) instance = null
         super.onDestroy()
@@ -78,6 +79,97 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
             else -> return false
         }
         return performGlobalAction(a)
+    }
+
+    // ------------------------------------------- mini panel ("Singh AI" popup)
+
+    private var mini: android.widget.LinearLayout? = null
+    private var miniOrb: OrbView? = null
+    private var miniText: TextView? = null
+    private var miniHint: TextView? = null
+
+    /** Small Gemini-style popup at the top of the screen, over any app. */
+    fun showMini(text: String, hint: String, mode: OrbView.Mode) {
+        main.post {
+            val wm = getSystemService(WindowManager::class.java) ?: return@post
+            val d = resources.displayMetrics.density
+            val p = Ui.palette(this)
+            if (mini == null) {
+                val box = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    val pad = (12 * d).toInt()
+                    setPadding(pad, pad, pad / 2, pad)
+                    background = Ui.rounded(
+                        if (p.dark) Color.parseColor("#F21C1C1E") else Color.parseColor("#F7FFFFFF"),
+                        26 * d, p.separator, if (p.dark) 0 else 1
+                    )
+                    elevation = 12 * d
+                    setOnClickListener {
+                        // open the full app
+                        WakeService.instance?.endSession(false)
+                        startActivity(
+                            android.content.Intent(this@JarvisAccess, MainActivity::class.java)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                }
+                val orb = OrbView(this).apply { dark = p.dark; isClickable = false }
+                box.addView(orb, android.widget.LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt()))
+                val texts = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
+                    setPadding((10 * d).toInt(), 0, (4 * d).toInt(), 0)
+                }
+                val t1 = Ui.text(this, "", 16f, p.text, Ui.medium).apply { maxLines = 5 }
+                val t2 = Ui.text(this, "", 12f, p.muted).apply { maxLines = 1 }
+                texts.addView(t1)
+                texts.addView(t2)
+                box.addView(texts, android.widget.LinearLayout.LayoutParams(0, -2, 1f))
+                val close = GlyphView(this, Glyph.CLOSE, p.muted).apply {
+                    glyphScale = 0.42f
+                    isClickable = true
+                    setOnClickListener { WakeService.instance?.endSession(true) }
+                }
+                box.addView(close, android.widget.LinearLayout.LayoutParams((40 * d).toInt(), (40 * d).toInt()))
+
+                val lp = WindowManager.LayoutParams(
+                    resources.displayMetrics.widthPixels - (20 * d).toInt(),
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    y = (44 * d).toInt()
+                }
+                try {
+                    wm.addView(box, lp)
+                    mini = box; miniOrb = orb; miniText = t1; miniHint = t2
+                    box.alpha = 0f
+                    box.translationY = -40 * d
+                    box.animate().alpha(1f).translationY(0f).setDuration(260).start()
+                } catch (e: Exception) {
+                    mini = null
+                    return@post
+                }
+            }
+            miniText?.text = text
+            miniHint?.text = hint
+            miniHint?.visibility = if (hint.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+            miniOrb?.mode = mode
+        }
+    }
+
+    fun miniLevel(level: Float) { main.post { miniOrb?.level = level } }
+
+    fun hideMini() {
+        val v = mini ?: return
+        mini = null; miniOrb = null; miniText = null; miniHint = null
+        main.post {
+            v.animate().alpha(0f).translationY(-30 * resources.displayMetrics.density).setDuration(200).withEndAction {
+                try { getSystemService(WindowManager::class.java)?.removeView(v) } catch (e: Exception) {}
+            }.start()
+        }
     }
 
     // ------------------------------------------------------ screen share
