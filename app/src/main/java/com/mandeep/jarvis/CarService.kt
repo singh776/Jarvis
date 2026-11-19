@@ -140,22 +140,10 @@ class CarService : MediaBrowserService(), TextToSpeech.OnInitListener {
 
     /** Plays a song in YouTube Music (shows in Android Auto), else Spotify, else YouTube. */
     private fun playSong(query: String, title: String) {
-        Playlist.add(this, query)
         show(title, say("ਗਾਣਾ ਲਾ ਰਿਹਾ ਹਾਂ…", "Playing…"))
-        for (pkg in listOf("com.google.android.apps.youtube.music", "com.spotify.music")) {
-            try {
-                startActivity(
-                    Intent(android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
-                        .setPackage(pkg)
-                        .putExtra(android.app.SearchManager.QUERY, query)
-                        .putExtra(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-                return
-            } catch (e: Exception) { /* try the next app */ }
-        }
+        // finds the exact song and opens it in YouTube Music so it starts playing (shows in Android Auto)
         try {
-            Actions(this).run(JSONObject().put("type", "youtube").put("query", query), punjabi, confirmed = true)
+            Actions(this).run(JSONObject().put("type", "play_music").put("query", query).put("app", "youtube music"), punjabi, confirmed = true)
         } catch (e: Exception) {
             show(title, say("ਗਾਣਾ ਨਹੀਂ ਲੱਗ ਸਕਿਆ", "Couldn't play that"))
         }

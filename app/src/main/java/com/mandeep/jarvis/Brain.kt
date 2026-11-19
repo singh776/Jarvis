@@ -69,7 +69,10 @@ class Brain(private val context: Context) {
 
     /** Runs on a background thread. Throws on network / API errors. */
     /** [fast] = use the quick Flash-Lite model (Live chat, side-button popup) for very fast answers. */
-    fun ask(text: String, punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String, fast: Boolean = false): Reply {
+    fun ask(
+        text: String, punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String, fast: Boolean = false,
+        onSay: ((String, Boolean) -> Unit)? = null
+    ): Reply {
         val modelOverride = if (fast) Gemini.fastModel(context) else null
         if (apiKey.isEmpty()) {
             return offline(text, punjabiMode)
@@ -88,7 +91,9 @@ class Brain(private val context: Context) {
         val system = systemPrompt(punjabiMode, punjabiVoice, phoneInfo)
         val out = try {
             try {
-                Gemini.generate(context, system, contents, json = true, modelOverride = modelOverride)
+                if (onSay != null) Gemini.generateStream(context, system, contents, json = true, modelOverride = modelOverride) { so_far ->
+                    Gemini.partialSay(so_far)?.let { (t, done) -> if (t.isNotBlank()) onSay(t, done) }
+                } else Gemini.generate(context, system, contents, json = true, modelOverride = modelOverride)
             } catch (e: GeminiException) {
                 if (e.code != 400 || e.message.orEmpty().contains("API key", true)) throw e
                 // Old saved chat is broken → wipe it and ask again with only this message.

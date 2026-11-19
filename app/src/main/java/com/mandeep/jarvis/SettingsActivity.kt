@@ -429,7 +429,7 @@ class SettingsActivity : Activity() {
                     prefs.edit().putBoolean("wake_word", it).apply()
                     if (it) WakeService.start(this) else WakeService.stop(this)
                 }),
-                row("Auto Listen", Glyph.MIC, iosRed, toggle = prefs.getBoolean("auto_listen", false), onToggle = {
+                row("Auto Listen", Glyph.MIC, iosRed, toggle = prefs.getBoolean("auto_listen", true), onToggle = {
                     prefs.edit().putBoolean("auto_listen", it).apply()
                 }),
                 row("Keep Listening", Glyph.CHAT, iosGreen, toggle = prefs.getBoolean("keep_talking", true), onToggle = {

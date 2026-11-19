@@ -45,7 +45,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var showingCrash = false
 
     // ---- views (rebuilt when the theme changes)
-    private lateinit var orb: SparkleView
+    private lateinit var orb: OrbView
     private lateinit var status: TextView
     private lateinit var chat: LinearLayout
     private lateinit var scroll: ScrollView
@@ -87,6 +87,23 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun statusBarFallback(): Int {
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(28)
+    }
+
+    /** The answer bubble that fills in word by word while Gemini is still writing. */
+    private var streamBubble: TextView? = null
+    private var streamText = ""
+    private var spokenEarly: String? = null
+    private var earlyDone = false
+
+    /** Starts speaking as soon as the answer's words are complete — no waiting for the rest. */
+    private fun speakEarly(text: String) {
+        val engine = tts ?: return
+        if (!ttsReady || text.isBlank() || spokenEarly != null) return
+        spokenEarly = text
+        earlyDone = false
+        VoiceSettings.apply(this, engine, text, punjabiVoice)
+        engine.setAudioAttributes(CarAudio.voiceAttributes(this))
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "early-" + System.currentTimeMillis())
     }
 
     private var liveChat: LinearLayout? = null
@@ -226,7 +243,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", false)
+    private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", true)
 
     private val autoListenTask = Runnable {
         if (!busy && !listening && mode == OrbView.Mode.IDLE && tts?.isSpeaking != true && hasWindowFocus()) {
@@ -354,16 +371,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             gravity = Gravity.CENTER_HORIZONTAL
         }
         hero.addView(View(this), LinearLayout.LayoutParams(-1, 0, 1f))
-        orb = SparkleView(this).apply {
+        orb = OrbView(this).apply {
             dark = p.dark
             contentDescription = "Tap to talk"
-            setOnClickListener { openLive() }
+            setOnClickListener { micTapped() }
+            setOnLongClickListener { openLive(); true }
         }
-        hero.addView(orb, LinearLayout.LayoutParams(dp(64), dp(64)))
-        greeting = Ui.text(this, "", 34f, p.text, Ui.regular).apply {
+        hero.addView(orb, LinearLayout.LayoutParams(dp(250), dp(250)))
+        greeting = Ui.text(this, "", 26f, p.text, Ui.regular).apply {
             gravity = Gravity.CENTER
-            setPadding(dp(16), dp(18), dp(16), 0)
-            setLineSpacing(0f, 1.05f)
+            setPadding(dp(20), dp(10), dp(20), 0)
+            setLineSpacing(0f, 1.08f)
+            maxLines = 8
+            ellipsize = android.text.TextUtils.TruncateAt.END
         }
         hero.addView(greeting, LinearLayout.LayoutParams(-1, -2))
         hero.addView(View(this), LinearLayout.LayoutParams(-1, 0, 1f))
@@ -512,6 +532,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         bar.addView(pill, LinearLayout.LayoutParams(0, dp(68), 1f))
         col.addView(bar, LinearLayout.LayoutParams(-1, -2))
         updateSuggestions()
+        // Voice first: just the big orb. Talk → it answers out loud. (Old chats: ≡ on the left.)
+        bar.visibility = View.GONE
+        modes.visibility = View.GONE
+        suggestions.visibility = View.GONE
+        scroll.visibility = View.GONE
 
         Ui.onInsets(root) { t, b ->
             col.setPadding(dp(16), t, dp(16), b)
@@ -573,6 +598,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     /** Welcome screen when the chat is empty, chat when there are messages. */
     private fun updateHero(animate: Boolean = true) {
         if (!::hero.isInitialized) return
+        // voice-first: the orb screen always stays; the text under it shows what's said
+        hero.visibility = View.VISIBLE
+        if (messages.isEmpty() && !busy && !listening) greeting.text = greetingText()
+        if (true) return
         val empty = chat.childCount == 0
         greeting.text = greetingText()
         if (empty && hero.visibility != View.VISIBLE) {
@@ -681,7 +710,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     /** Shows what the mic is hearing in a user bubble that updates live. */
+    private fun heroText(t: String, muted: Boolean) {
+        if (!::greeting.isInitialized) return
+        greeting.setTextColor(if (muted) p.muted else p.text)
+        greeting.text = t
+    }
+
     private fun showLiveText(text: String) {
+        heroText(text, muted = true)
         if (liveMode) showLivePending(text)
         val b = liveUserBubble
         if (b == null) liveUserBubble = addBubbleView(true, text, animate = true)
@@ -877,12 +913,54 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private var listenAfterSpeech = false
 
+    /** Shows the answer as it arrives (line by line, like Gemini). */
+    private fun showStreaming(t: String) {
+        if (!busy || t == streamText) return
+        streamText = t
+        heroText(t, muted = false)
+        val b = streamBubble
+        if (b == null) {
+            hideThinking()
+            streamBubble = addBubbleView(false, t, animate = true)
+        } else {
+            b.text = t
+            scrollToEnd()
+        }
+    }
+
     private fun say(text: String, listenAfter: Boolean) {
         hideThinking()
-        if (text.isNotBlank()) addMessage(false, text)
+        if (text.isNotBlank()) heroText(text, muted = false)
+        val sb = streamBubble
+        streamBubble = null
+        streamText = ""
+        if (sb != null && text.isNotBlank()) {
+            // the streamed bubble becomes the final answer (no second copy)
+            sb.text = text
+            messages.add(Msg(false, text))
+            addLiveLine(false, text)
+            saveChatSoon()
+            scrollToEnd()
+        } else if (sb != null) {
+            (sb.parent as? View)?.let { row -> (row.parent as? ViewGroup)?.removeView(row) }
+        } else if (text.isNotBlank()) addMessage(false, text)
+        val early = spokenEarly
+        if (early != null) {
+            spokenEarly = null
+            if (text.startsWith(early)) {
+                // already being spoken — add only what's new, then decide what happens after it
+                listenAfterSpeech = listenAfter
+                val rest = text.removePrefix(early).trim()
+                val engine = tts
+                if (rest.isNotEmpty() && engine != null && ttsReady) {
+                    earlyDone = false
+                    engine.speak(rest, TextToSpeech.QUEUE_ADD, null, "jarvis-" + System.currentTimeMillis())
+                } else if (earlyDone) { earlyDone = false; afterSpeaking() }
+                return
+            }
+        }
         val engine = tts
         if (!ttsReady || engine == null || text.isBlank()) {
-
             setMode(OrbView.Mode.IDLE)
             setStatus(idleText())
             return
@@ -895,6 +973,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun afterSpeaking() {
+        if (spokenEarly != null) {
+            // finished the early answer while the action is still being prepared
+            earlyDone = true
+            if (busy) return
+        }
         setMode(OrbView.Mode.IDLE)
         setStatus(idleText())
         if (liveMode) {
@@ -1055,6 +1138,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             (if (file.mime.startsWith("image/")) "🖼  " else "📄  ") + q
         } else text
         finishUserText(shown)
+        heroText(shown, muted = false)
+        spokenEarly = null; earlyDone = false
         showThinking()
         setMode(OrbView.Mode.THINKING)
         setStatus("Thinking…")
@@ -1077,7 +1162,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             var failed = false
             val result: Reply = try {
                 if (file != null) Reply(brain.askAbout(text, file, pa, paVoice), null)
-                else brain.ask(asked, pa, paVoice, info, fast = liveMode)
+                else brain.ask(asked, pa, paVoice, info, fast = true, onSay = { t, done ->
+                    runOnUiThread { showStreaming(t); if (done) speakEarly(t) }
+                })
             } catch (e: Exception) {
                 failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
@@ -1123,6 +1210,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 // (screen control says "sent" out loud itself, so only show it here)
                 JarvisAccess.instance?.pressSendSoon(pa)
                 hideThinking()
+                streamBubble?.let { b -> (b.parent as? View)?.let { row -> (row.parent as? ViewGroup)?.removeView(row) } }
+                streamBubble = null; streamText = ""
                 addMessage(false, result.say.ifBlank { if (pa) "ਭੇਜ ਰਿਹਾ ਹਾਂ…" else "Sending it, Sir…" })
                 setMode(OrbView.Mode.IDLE)
                 setStatus(idleText())

@@ -84,6 +84,25 @@ object Gemini {
     /** The quick model used for Live chat / the side-button popup (Settings → backup model). */
     fun fastModel(ctx: Context): String = fallbackModel(ctx).ifEmpty { DEFAULT_FALLBACK_MODEL }
 
+    /** Set while a streamed answer is being read: gets the text so far (on the background thread). */
+    private val streamCb = ThreadLocal<((String) -> Unit)?>()
+
+    /**
+     * Like [generate] but the answer comes in piece by piece (like Gemini typing it out):
+     * [onText] is called again and again with all the text received so far.
+     */
+    fun generateStream(
+        ctx: Context, system: String, contents: JSONArray, json: Boolean,
+        modelOverride: String? = null, onText: (String) -> Unit
+    ): String {
+        streamCb.set(onText)
+        try {
+            return generate(ctx, system, contents, json, modelOverride)
+        } finally {
+            streamCb.set(null)
+        }
+    }
+
     fun generate(ctx: Context, system: String, contents: JSONArray, json: Boolean, modelOverride: String? = null): String {
         val key = apiKey(ctx)
         if (key.isEmpty()) throw IllegalStateException("No Gemini API key")
@@ -210,10 +229,12 @@ object Gemini {
         if (think.isNotEmpty()) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", think))
         if (gen.length() > 0) body.put("generationConfig", gen)
 
+        val cb = streamCb.get()
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +
-                URLEncoder.encode(model, "UTF-8") + ":generateContent" +
-                (if (keyInUrl) "?key=" + URLEncoder.encode(key, "UTF-8") else "")
+                URLEncoder.encode(model, "UTF-8") +
+                (if (cb != null) ":streamGenerateContent?alt=sse" else ":generateContent") +
+                (if (keyInUrl) (if (cb != null) "&" else "?") + "key=" + URLEncoder.encode(key, "UTF-8") else "")
         )
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -225,6 +246,7 @@ object Gemini {
         }
         try {
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            if (cb != null) return readStream(conn, cb)
             val (code, raw) = read(conn)
             if (code !in 200..299) throw toError(code, raw)
             val parts = JSONObject(raw)
@@ -241,6 +263,72 @@ object Gemini {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** Reads a streamed answer ("data: {…}" lines), passing the text so far to [cb]. */
+    private fun readStream(conn: HttpURLConnection, cb: (String) -> Unit): String {
+        val code = try { conn.responseCode } catch (e: IOException) {
+            if (e.message.orEmpty().contains("authentication challenge", true)) 401 else throw e
+        }
+        if (code !in 200..299) {
+            val raw = try { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "" } catch (e: IOException) { "" }
+            // streamed errors can come as a JSON list
+            throw toError(code, raw.trim().removePrefix("[").removeSuffix("]"))
+        }
+        val sb = StringBuilder()
+        conn.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
+            while (true) {
+                val line = r.readLine() ?: break
+                if (!line.startsWith("data:")) continue
+                val js = line.removePrefix("data:").trim()
+                if (js.isEmpty()) continue
+                val o = try { JSONObject(js) } catch (e: Exception) { continue }
+                o.optJSONObject("error")?.let { throw toError(it.optInt("code", 500), o.toString()) }
+                val parts = o.optJSONArray("candidates")?.optJSONObject(0)
+                    ?.optJSONObject("content")?.optJSONArray("parts") ?: continue
+                var added = false
+                for (i in 0 until parts.length()) {
+                    val p = parts.optJSONObject(i) ?: continue
+                    if (p.optBoolean("thought", false)) continue
+                    val t = p.optString("text", "")
+                    if (t.isNotEmpty()) { sb.append(t); added = true }
+                }
+                if (added) try { cb(sb.toString()) } catch (e: Exception) {}
+            }
+        }
+        if (sb.isBlank()) throw GeminiException(503, "Gemini error 503: empty answer")
+        return sb.toString()
+    }
+
+    /**
+     * Pulls the "say" text out of a JSON answer that is still arriving.
+     * Returns (text so far, finished) or null when "say" hasn't started yet.
+     */
+    fun partialSay(raw: String): Pair<String, Boolean>? {
+        val m = Regex("\"say\"\\s*:\\s*\"").find(raw) ?: return null
+        val sb = StringBuilder()
+        var i = m.range.last + 1
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (ch == '\\') {
+                if (i + 1 >= raw.length) break
+                when (val n = raw[i + 1]) {
+                    'n' -> sb.append('\n'); 't' -> sb.append(' '); '"' -> sb.append('"'); '\\' -> sb.append('\\'); '/' -> sb.append('/')
+                    'u' -> {
+                        if (i + 5 >= raw.length) break
+                        raw.substring(i + 2, i + 6).toIntOrNull(16)?.let { sb.append(it.toChar()) }
+                        i += 4
+                    }
+                    else -> sb.append(n)
+                }
+                i += 2
+                continue
+            }
+            if (ch == '"') return sb.toString() to true
+            sb.append(ch)
+            i++
+        }
+        return sb.toString() to false
     }
 
     /** Reads status + body. Some Android versions throw on a 401 instead of returning it. */

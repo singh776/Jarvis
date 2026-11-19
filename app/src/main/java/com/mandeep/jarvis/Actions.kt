@@ -383,18 +383,43 @@ class Actions(private val activity: Context) {
         return ActionResult(task = action.optString("goal"))
     }
 
+    private fun installed(pkg: String) = try { activity.packageManager.getPackageInfo(pkg, 0); true } catch (e: Exception) { false }
+
+    /**
+     * Plays a song. YouTube Music: finds the exact song first and opens it so it STARTS PLAYING
+     * (just "searching" in YouTube Music only opened the app). Spotify: play-from-search.
+     */
     private fun playMusic(query: String, app: String): String? {
-        val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
-            .putExtra(SearchManager.QUERY, query)
-            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
-        val pkg = when (norm(app)) {
-            "spotify" -> "com.spotify.music"
-            "youtubemusic", "ytmusic" -> "com.google.android.apps.youtube.music"
-            "youtube" -> if (CarAudio.inCar(activity)) "com.google.android.apps.youtube.music" else return youtube(query)
-            else -> null
+        val a = norm(app)
+        val ytm = "com.google.android.apps.youtube.music"
+        if (a == "spotify" && installed("com.spotify.music")) {
+            val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                .putExtra(SearchManager.QUERY, query)
+                .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                .setPackage("com.spotify.music")
+            try { start(i); return null } catch (e: Exception) {}
         }
-        if (pkg != null) i.setPackage(pkg)
-        try { start(i) } catch (e: ActivityNotFoundException) { return youtube(query) }
+        val wantYtm = a == "youtubemusic" || a == "ytmusic" || CarAudio.inCar(activity) || (a.isEmpty() && installed(ytm))
+        if (a == "youtube" && !CarAudio.inCar(activity)) return youtube(query)
+        if (!wantYtm || !installed(ytm)) return youtube(query)
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread {
+            val id = try { YouTubeFinder.firstVideoId(query) } catch (e: Exception) { null }
+            main.post {
+                try {
+                    if (id != null) {
+                        start(Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/watch?v=$id")).setPackage(ytm))
+                    } else {
+                        start(Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                            .putExtra(SearchManager.QUERY, query)
+                            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                            .setPackage(ytm))
+                    }
+                } catch (e: Exception) {
+                    try { youtube(query) } catch (e2: Exception) {}
+                }
+            }
+        }.start()
         return null
     }
 
