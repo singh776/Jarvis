@@ -526,6 +526,57 @@ class SettingsActivity : Activity() {
         f.setOnEditorActionListener { _, _, _ -> saveCustomModel(); finish(); true }
         modelField = f
         section(c, "Custom model ID", listOf(Row(f, false)), "Type any model ID here. Leave it empty to use the one picked above.")
+
+        // every model your API key can use, with a live check of which ones answer
+        val holder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        c.addView(holder)
+        val loading = Ui.text(this, "Loading the models on your key…", 14f, p.muted).apply { setPadding(dp(16), dp(20), dp(16), 0) }
+        holder.addView(loading)
+        Thread {
+            val models = try { Gemini.listModels(this) } catch (e: Exception) { emptyList() }
+            runOnUiThread {
+                holder.removeAllViews()
+                if (models.isEmpty()) {
+                    holder.addView(Ui.text(this, "Couldn't load models — check the API key and internet.", 14f, p.muted).apply {
+                        setPadding(dp(16), dp(20), dp(16), 0)
+                    })
+                    return@runOnUiThread
+                }
+                val statusViews = HashMap<String, TextView>()
+                val rows = ArrayList<Row>()
+                rows.add(row("Test all models", Glyph.CHECK, Color.parseColor("#34C759"), chevron = true) {
+                    Thread {
+                        for (m in models) {
+                            runOnUiThread { statusViews[m]?.text = "…" }
+                            val (_, msg) = Gemini.probe(this, m)
+                            runOnUiThread { statusViews[m]?.text = msg }
+                            Thread.sleep(1200) // gentle, so the free limit isn't hit by the test itself
+                        }
+                    }.start()
+                })
+                for (m in models) {
+                    val r = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(16), dp(10), dp(16), dp(10))
+                        isClickable = true
+                        background = Ui.pressable(Ui.rounded(Color.TRANSPARENT, 0f), Ui.rounded(p.surface2, 0f))
+                        setOnClickListener {
+                            prefs.edit().putString(prefKey, m).apply()
+                            modelField?.setText("")
+                            finish()
+                        }
+                    }
+                    r.addView(Ui.text(this, (if (m == current) "✓  " else "") + m, 16f, if (m == current) p.accent else p.text))
+                    val st = Ui.text(this, "", 13f, p.muted)
+                    r.addView(st)
+                    statusViews[m] = st
+                    rows.add(Row(r, false))
+                }
+                section(holder, "All models on your key (${models.size})", rows,
+                    "Tap one to use it. \"Test all\" checks which ones answer on your key right now. " +
+                        "❌ No free use = that model needs billing in AI Studio. ⏳ = busy or limit for now; Singh AI then uses the next model by itself.")
+            }
+        }.start()
     }
 
     private fun saveCustomModel() {

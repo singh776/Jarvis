@@ -9,7 +9,10 @@ import java.net.URL
 import java.net.URLEncoder
 
 /** An HTTP error from Gemini, with its status code. */
-class GeminiException(val code: Int, message: String, val reason: String = "") : RuntimeException(message)
+class GeminiException(val code: Int, message: String, val reason: String = "", val retrySec: Int = 0) : RuntimeException(message) {
+    /** 429 because this key has NO free use of this model at all ("limit: 0"). */
+    val noQuota: Boolean get() = code == 429 && (message.orEmpty().contains("limit: 0") || message.orEmpty().contains("limit:0"))
+}
 
 /** Small Google Gemini REST client (no extra libraries). */
 object Gemini {
@@ -32,7 +35,12 @@ object Gemini {
     )
 
     /** Waits between retries when the server is busy: 1s, 2s, 4s. */
-    private val RETRY_DELAYS_MS = longArrayOf(1000, 2000, 4000)
+    private val RETRY_DELAYS_MS = longArrayOf(800, 1600)
+
+    /** Models that hit their limit (429) — skipped until this time, so we don't waste seconds on them. */
+    private val coolDown = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun cooling(model: String) = (coolDown[model] ?: 0L) > System.currentTimeMillis()
 
     /** HTTP codes that mean "busy, try again soon". */
     private val BUSY_CODES = setOf(429, 500, 502, 503, 504)
@@ -83,34 +91,48 @@ object Gemini {
         val contents = sanitize(contents)
         if (contents.length() == 0) throw GeminiException(400, "Gemini error 400: empty request")
         val main = modelOverride ?: model(ctx)
+        // Try the chosen model first, then the backup, then Flash-Lite (works on almost every free key).
+        val all = LinkedHashSet<String>().apply {
+            add(main)
+            if (fallbackEnabled(ctx)) {
+                if (modelOverride != null) add(model(ctx))
+                fallbackModel(ctx).takeIf { it.isNotEmpty() }?.let { add(it) }
+                add(DEFAULT_FALLBACK_MODEL)
+            }
+        }.toList()
+        val ready = all.filterNot { cooling(it) }
+        val order = if (ready.isEmpty()) all else ready
         var last: GeminiException? = null
 
-        // 1) main model: first try + up to 3 retries
-        for (attempt in 0..RETRY_DELAYS_MS.size) {
-            try {
-                return call(key, main, system, contents, json)
-            } catch (e: GeminiException) {
-                if (e.code == 404) { last = e; break } // model gone → go straight to the backup model
-                if (e.code !in BUSY_CODES) throw e
-                last = e
-                if (attempt < RETRY_DELAYS_MS.size) {
-                    onRetry?.invoke(attempt + 1, false)
-                    Thread.sleep(RETRY_DELAYS_MS[attempt])
-                }
-            }
-        }
-
-        // 2) backup model: one try + one retry
-        val backup = if (modelOverride != null && modelOverride != model(ctx)) model(ctx) else fallbackModel(ctx)
-        if (fallbackEnabled(ctx) && backup.isNotEmpty() && backup != main) {
-            for (attempt in 0..1) {
+        for ((n, m) in order.withIndex()) {
+            if (n > 0) onRetry?.invoke(1, true)
+            for (attempt in 0..RETRY_DELAYS_MS.size) {
                 try {
-                    onRetry?.invoke(attempt + 1, true)
-                    return call(key, backup, system, contents, json)
+                    val out = call(key, m, system, contents, json)
+                    coolDown.remove(m)
+                    return out
                 } catch (e: GeminiException) {
-                    if (e.code !in BUSY_CODES) throw e
                     last = e
-                    if (attempt == 0) Thread.sleep(2000)
+                    when {
+                        e.code == 429 -> {
+                            // limit reached: don't hammer it, move to the next model right away
+                            val wait = when {
+                                e.noQuota -> 30 * 60_000L
+                                e.retrySec > 0 -> e.retrySec * 1000L
+                                else -> 60_000L
+                            }
+                            coolDown[m] = System.currentTimeMillis() + wait
+                            break
+                        }
+                        e.code == 404 -> break // model not available on this key
+                        e.code in BUSY_CODES -> {
+                            if (attempt < RETRY_DELAYS_MS.size) {
+                                onRetry?.invoke(attempt + 1, false)
+                                Thread.sleep(RETRY_DELAYS_MS[attempt])
+                            }
+                        }
+                        else -> throw e
+                    }
                 }
             }
         }
@@ -237,17 +259,21 @@ object Gemini {
     private fun toError(code: Int, raw: String): GeminiException {
         var msg = raw
         var reason = ""
+        var retry = 0
         try {
             val err = JSONObject(raw).getJSONObject("error")
             msg = err.optString("message", raw)
             reason = err.optString("status", "")
             val details = err.optJSONArray("details")
             if (details != null) for (i in 0 until details.length()) {
-                val r = details.optJSONObject(i)?.optString("reason", "").orEmpty()
-                if (r.isNotEmpty()) { reason = r; break }
+                val d = details.optJSONObject(i) ?: continue
+                val r = d.optString("reason", "")
+                if (r.isNotEmpty() && reason.isEmpty()) reason = r
+                val delay = d.optString("retryDelay", "")
+                if (delay.isNotEmpty()) retry = delay.filter { it.isDigit() || it == '.' }.toDoubleOrNull()?.toInt() ?: 0
             }
         } catch (e: Exception) {}
-        return GeminiException(code, "Gemini error $code: ${msg.take(200)}", reason)
+        return GeminiException(code, "Gemini error $code: ${msg.take(300)}", reason, retry)
     }
 
     /**
@@ -293,11 +319,48 @@ object Gemini {
         return Triple(false, "$lastErr\n\n$info", emptyList())
     }
 
+    /** Tries one tiny question on [model] and says if it works (blocking — run off the main thread). */
+    fun probe(ctx: Context, model: String): Pair<Boolean, String> {
+        val key = apiKey(ctx)
+        if (key.isEmpty()) return false to "No API key"
+        val t0 = System.currentTimeMillis()
+        return try {
+            call(key, model, "Reply with one word.", JSONArray().put(part("user", "Hi")), false)
+            coolDown.remove(model)
+            true to "✅ Works · ${"%.1f".format((System.currentTimeMillis() - t0) / 1000f)}s"
+        } catch (e: GeminiException) {
+            false to when {
+                e.noQuota -> "❌ No free use on your key"
+                e.code == 429 -> "⏳ Limit reached — try in a minute"
+                e.code == 503 || e.code == 500 -> "⏳ Google busy right now"
+                e.code == 404 -> "❌ Not available"
+                e.code == 401 || e.code == 403 -> "❌ Key not allowed"
+                else -> "❌ ${e.code}: " + e.message.orEmpty().removePrefix("Gemini error ${e.code}: ").take(60)
+            }
+        } catch (e: Exception) {
+            false to "❌ ${e.javaClass.simpleName}"
+        }
+    }
+
+    /** Text models this key can use (blocking). */
+    fun listModels(ctx: Context): List<String> {
+        val (ok, _, names) = testKey(apiKey(ctx))
+        if (!ok) return emptyList()
+        val skip = listOf("tts", "image", "embedding", "audio", "live", "robotics", "aqa", "native")
+        return names.filter { n -> skip.none { n.contains(it) } }.distinct().sorted()
+    }
+
     /** A short, correct message for the user for any error from [generate]. */
     fun friendlyError(e: Throwable, punjabi: Boolean): String {
         val keyOrNet = if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਜੁੜ ਨਹੀਂ ਸਕਿਆ। ਇੰਟਰਨੈੱਟ ਤੇ API key ਚੈੱਕ ਕਰੋ।"
         else "Sorry Sir, I couldn't connect. Check the internet and API key."
         return when {
+            e is GeminiException && e.noQuota ->
+                if (punjabi) "ਤੁਹਾਡੀ API key ਤੇ ਇਸ ਮਾਡਲ ਦੀ ਮੁਫ਼ਤ ਵਰਤੋਂ ਨਹੀਂ ਹੈ। ਸੈਟਿੰਗ → AI ਵਿੱਚ Flash-Lite ਚੁਣੋ, ਜਾਂ AI Studio ਵਿੱਚ billing ਚਾਲੂ ਕਰੋ।"
+                else "Your API key has no free use of this model. Pick Flash-Lite in Settings → AI, or turn on billing in AI Studio."
+            e is GeminiException && e.code == 429 ->
+                if (punjabi) "ਮੁਫ਼ਤ ਵਾਲੀ ਹੱਦ ਪੂਰੀ ਹੋ ਗਈ (ਇੱਕ ਮਿੰਟ ਵਿੱਚ ਬਹੁਤੇ ਸਵਾਲ)। ਮਿੰਟ ਕੁ ਬਾਅਦ ਫਿਰ ਪੁੱਛੋ।"
+                else "The free limit is used up for now (too many requests). Ask again in a minute."
             isBusy(e) ->
                 if (punjabi) "ਸਰਵਰ ਬਿਜ਼ੀ ਹੈ ਸਰ, ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਦੁਬਾਰਾ ਪੁੱਛੋ।"
                 else "Google's server is busy right now, Sir. Please ask again in a moment."

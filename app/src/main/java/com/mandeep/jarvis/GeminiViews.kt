@@ -46,8 +46,8 @@ class SparkleView(context: Context) : View(context) {
     var dark = false
 
     private val path = Path()
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG).apply { style = Paint.Style.FILL }
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
     private val m = Matrix()
     private val shader = SweepGradient(
         0f, 0f,
@@ -128,8 +128,8 @@ class SparkleView(context: Context) : View(context) {
 /** The light-blue round button with three bars (opens the Live screen). */
 class LiveButton(context: Context) : View(context) {
     var dark = false
-    private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val bar = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeCap = Paint.Cap.ROUND; style = Paint.Style.STROKE }
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
+    private val bar = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG).apply { strokeCap = Paint.Cap.ROUND; style = Paint.Style.STROKE }
 
     init { isClickable = true }
 
@@ -165,8 +165,8 @@ class LivePill(context: Context) : View(context) {
 
     private val box = RectF()
     private val clip = Path()
-    private val base = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val blob = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val base = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
+    private val blob = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
     private val m = Matrix()
     private var baseShader: LinearGradient? = null
     private var baseH = -1f

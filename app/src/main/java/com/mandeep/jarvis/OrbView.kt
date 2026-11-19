@@ -51,7 +51,7 @@ class OrbView(context: Context, attrs: AttributeSet? = null) : View(context, att
     private var shaders: List<RadialGradient> = emptyList()
     private lateinit var halo: RadialGradient
     private lateinit var core: RadialGradient
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private var ringShader: SweepGradient? = null
     private var ringCx = -1f
@@ -319,22 +319,42 @@ class GlowView(context: Context) : View(context) {
     override fun onAttachedToWindow() { super.onAttachedToWindow(); last = 0L; animator.start() }
     override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
 
+    private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
+    }
+    private var maskH = -1f
+
+    init { paint.isDither = true }
+
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
+        // draw the colors on their own layer, then fade the top out smoothly (no hard line at the top)
+        val save = canvas.saveLayer(0f, 0f, w, h, null)
         val speed = when (mode) { OrbView.Mode.THINKING -> 1.4f; OrbView.Mode.IDLE -> 0.25f; else -> 0.7f }
         for (i in shaders.indices) {
             val ph = i * 1.7f + t * speed * (if (i % 2 == 0) 1f else -0.8f)
             val x = w * (0.5f + 0.42f * sin(ph))
-            val r = h * (0.75f + 0.25f * sin(ph * 0.7f + i)) * (0.75f + amt * 0.5f)
-            m.setScale(r * 1.4f, r)
-            m.postTranslate(x, h * 1.02f)
+            val r = h * (0.62f + 0.18f * sin(ph * 0.7f + i)) * (0.75f + amt * 0.4f)
+            m.setScale(r * 1.5f, r)
+            m.postTranslate(x, h * 1.04f)
             shaders[i].setLocalMatrix(m)
             paint.shader = shaders[i]
-            paint.alpha = ((if (dark) 255 else 200) * amt.coerceIn(0f, 1f)).toInt()
+            paint.alpha = ((if (dark) 255 else 210) * amt.coerceIn(0f, 1f)).toInt()
             canvas.drawRect(0f, 0f, w, h, paint)
         }
         paint.shader = null
-    }
+        if (maskH != h) {
+            maskPaint.shader = android.graphics.LinearGradient(
+                0f, 0f, 0f, h,
+                intArrayOf(Color.TRANSPARENT, Color.argb(90, 0, 0, 0), Color.argb(220, 0, 0, 0), Color.BLACK),
+                floatArrayOf(0f, 0.35f, 0.7f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            maskH = h
+        }
+        canvas.drawRect(0f, 0f, w, h, maskPaint)
+        canvas.restoreToCount(save)
+}
 }

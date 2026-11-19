@@ -72,6 +72,23 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var liveMuted = false
     private var liveMisses = 0
 
+    // status bar / nav bar sizes (the main screen gets them; the Live screen and chat list reuse them)
+    private var insetTop = 0
+    private var insetBottom = 0
+    private val overlayPads = ArrayList<(Int, Int) -> Unit>()
+
+    /** Keeps an overlay's content clear of the status bar (top) and the nav bar (bottom). */
+    private fun padForBars(apply: (Int, Int) -> Unit) {
+        val top = if (insetTop > 0) insetTop else statusBarFallback()
+        apply(top, insetBottom)
+        overlayPads.add(apply)
+    }
+
+    private fun statusBarFallback(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(28)
+    }
+
     private var liveChat: LinearLayout? = null
     private var liveScroll: ScrollView? = null
     private var livePending: TextView? = null
@@ -267,6 +284,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         rootFrame = root
         liveLayer = null
         drawer = null
+        overlayPads.clear()
 
         // Gemini Live-style glow rising from the bottom while listening / speaking
         glow = GlowView(this).apply { dark = p.dark }
@@ -495,7 +513,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         col.addView(bar, LinearLayout.LayoutParams(-1, -2))
         updateSuggestions()
 
-        Ui.onInsets(root) { t, b -> col.setPadding(dp(16), t, dp(16), b) }
+        Ui.onInsets(root) { t, b ->
+            col.setPadding(dp(16), t, dp(16), b)
+            insetTop = t; insetBottom = b
+            overlayPads.forEach { it(t, b) }
+        }
         setContentView(root)
 
         refreshAttachChip()
@@ -791,7 +813,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         panel.addView(row(Glyph.GEAR, if (punjabi) "ਸੈਟਿੰਗ" else "Settings") { closeDrawer(); openSettings(null) },
             LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(8), 0, dp(8), dp(8)) })
 
-        Ui.onInsets(layer) { t, b -> panel.setPadding(0, t, 0, b) }
+        padForBars { t, b -> panel.setPadding(0, t, 0, b) }
         rootFrame.addView(layer, FrameLayout.LayoutParams(-1, -1))
         drawer = layer
         panel.translationX = -w.toFloat()
@@ -807,7 +829,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         dim.animate().alpha(0f).setDuration(200).start()
         panel.animate().translationX(-panel.width.toFloat()).setDuration(220)
             .setInterpolator(android.view.animation.AccelerateInterpolator(1.5f)).withLayer()
-            .withEndAction { rootFrame.removeView(layer) }.start()
+            .withEndAction { rootFrame.removeView(layer); overlayPads.clear() }.start()
     }
 
     private fun dropLiveText() {
@@ -1453,6 +1475,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .withLayer()
             .withEndAction {
                 rootFrame.removeView(layer)
+                overlayPads.clear()
                 livePill = null; liveGlow = null; liveSpark = null; liveText = null; liveMicBtn = null
                 liveChat = null; liveScroll = null; livePending = null
             }.start()
@@ -1620,7 +1643,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         row.addView(circleButton(Glyph.CLOSE, "Close") { closeLive() }, LinearLayout.LayoutParams(size, size))
         col.addView(row, LinearLayout.LayoutParams(-1, -2))
 
-        Ui.onInsets(layer) { t, b -> col.setPadding(dp(8), t, dp(8), b) }
+        padForBars { t, b -> col.setPadding(dp(8), t + dp(4), dp(8), b) }
         rootFrame.addView(layer, FrameLayout.LayoutParams(-1, -1))
         liveLayer = layer
         if (animate) {
