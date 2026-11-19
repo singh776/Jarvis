@@ -42,7 +42,8 @@ class Brain(private val context: Context) {
             val arr = JSONArray(prefs.getString("history", "[]"))
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                history.add(o.getString("r") to o.getString("t"))
+                val t = o.optString("t")
+                if (t.isNotBlank()) history.add(o.optString("r", "user") to t)
             }
         } catch (e: Exception) { history.clear() }
     }
@@ -63,12 +64,23 @@ class Brain(private val context: Context) {
         val contents = JSONArray()
         for ((role, msg) in history) contents.put(Gemini.part(role, msg))
 
+        val system = systemPrompt(punjabiMode, punjabiVoice, phoneInfo)
         val out = try {
-            Gemini.generate(context, systemPrompt(punjabiMode, punjabiVoice, phoneInfo), contents, json = true)
+            try {
+                Gemini.generate(context, system, contents, json = true)
+            } catch (e: GeminiException) {
+                if (e.code != 400 || e.message.orEmpty().contains("API key", true)) throw e
+                // Old saved chat is broken → wipe it and ask again with only this message.
+                history.clear()
+                history.add("user" to text)
+                Gemini.generate(context, system, JSONArray().put(Gemini.part("user", text)), json = true)
+            }
         } catch (e: Exception) {
-            history.removeAt(history.size - 1)
+            if (history.isNotEmpty()) history.removeAt(history.size - 1)
+            saveHistory()
             throw e
         }
+        if (out.isBlank()) { history.removeAt(history.size - 1); saveHistory(); return Reply("", null) }
         history.add("model" to out)
         saveHistory()
         val o = Gemini.parseJson(out) ?: return Reply(out.trim(), null)
@@ -105,6 +117,7 @@ class Brain(private val context: Context) {
         contents.put(JSONObject().put("role", "user").put("parts", parts))
 
         val out = Gemini.generate(context, system, contents, json = false).trim()
+        if (out.isBlank()) return out
         history.add("user" to "[showed a ${file.label}] $q")
         history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())
         while (history.size > 24) history.removeAt(0)
@@ -119,7 +132,8 @@ class Brain(private val context: Context) {
             langRule(punjabiMode, punjabiVoice)
         val contents = JSONArray().put(Gemini.part("user", "REQUEST: $question\n\nDATA:\n$data"))
         val out = Gemini.generate(context, system, contents, json = false).trim()
-        history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())
+        if (out.isNotBlank() && history.lastOrNull()?.first == "user")
+            history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())
         saveHistory()
         return out
     }

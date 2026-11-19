@@ -77,6 +77,8 @@ object Gemini {
         val key = apiKey(ctx)
         if (key.isEmpty()) throw IllegalStateException("No Gemini API key")
 
+        val contents = sanitize(contents)
+        if (contents.length() == 0) throw GeminiException(400, "Gemini error 400: empty request")
         val main = model(ctx)
         var last: GeminiException? = null
 
@@ -112,16 +114,45 @@ object Gemini {
         throw last ?: GeminiException(503, "busy")
     }
 
-    /** Models that refused "no thinking" — we stop asking them for it. */
+    /**
+     * Cleans the conversation so Google never rejects it with 400:
+     * drops empty messages, joins two messages in a row from the same side,
+     * and makes sure it starts and ends with the user.
+     */
+    fun sanitize(contents: JSONArray): JSONArray {
+        val out = JSONArray()
+        for (i in 0 until contents.length()) {
+            val c = contents.optJSONObject(i) ?: continue
+            val role = if (c.optString("role") == "model") "model" else "user"
+            val parts = c.optJSONArray("parts") ?: continue
+            val good = JSONArray()
+            for (j in 0 until parts.length()) {
+                val p = parts.optJSONObject(j) ?: continue
+                if (p.has("inline_data") || p.has("inlineData")) good.put(p)
+                else if (p.optString("text").isNotBlank()) good.put(JSONObject().put("text", p.optString("text")))
+            }
+            if (good.length() == 0) continue
+            if (out.length() == 0 && role == "model") continue
+            val prev = if (out.length() > 0) out.getJSONObject(out.length() - 1) else null
+            if (prev != null && prev.getString("role") == role) {
+                val pp = prev.getJSONArray("parts")
+                for (j in 0 until good.length()) pp.put(good.get(j))
+            } else out.put(JSONObject().put("role", role).put("parts", good))
+        }
+        while (out.length() > 0 && out.getJSONObject(out.length() - 1).getString("role") == "model") out.remove(out.length() - 1)
+        return out
+    }
+
+    /** Models that refused our thinking setting — we stop sending it to them. */
     private val thinkingRequired = java.util.Collections.synchronizedSet(HashSet<String>())
 
     private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String {
-        // Skip the slow "thinking" step on Flash models so answers come back faster.
+        // Keep the "thinking" step short on Flash models so answers come back faster.
         val fast = model.contains("flash") && model !in thinkingRequired
         return try {
             callKey(key, model, system, contents, json, fast)
         } catch (e: GeminiException) {
-            if (fast && e.code == 400 && e.message.orEmpty().contains("thinking", true)) {
+            if (fast && e.code == 400 && !e.message.orEmpty().contains("API key", true)) {
                 thinkingRequired.add(model)
                 callKey(key, model, system, contents, json, false)
             } else throw e
@@ -144,7 +175,9 @@ object Gemini {
             .put("contents", contents)
         val gen = JSONObject()
         if (json) gen.put("responseMimeType", "application/json")
-        if (fast) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        // New Gemini models reject the old "thinkingBudget" (→ 400). Ask for low thinking instead;
+        // if a model refuses that too, call() retries with no thinking setting at all (like v2.6).
+        if (fast) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
         if (gen.length() > 0) body.put("generationConfig", gen)
 
         val url = URL(
@@ -165,13 +198,15 @@ object Gemini {
             val (code, raw) = read(conn)
             if (code !in 200..299) throw toError(code, raw)
             val parts = JSONObject(raw)
-                .getJSONArray("candidates").getJSONObject(0)
-                .getJSONObject("content").getJSONArray("parts")
+                .optJSONArray("candidates")?.optJSONObject(0)
+                ?.optJSONObject("content")?.optJSONArray("parts")
+                ?: throw GeminiException(503, "Gemini error 503: no answer (blocked or empty)")
             val sb = StringBuilder()
             for (i in 0 until parts.length()) {
                 val p = parts.getJSONObject(i)
                 if (!p.optBoolean("thought", false)) sb.append(p.optString("text", ""))
             }
+            if (sb.isBlank()) throw GeminiException(503, "Gemini error 503: empty answer")
             return sb.toString()
         } finally {
             conn.disconnect()
@@ -271,7 +306,8 @@ object Gemini {
             e is IllegalStateException ->
                 if (punjabi) "ਪਹਿਲਾਂ ਸੈਟਿੰਗ ਵਿੱਚ Gemini API key ਪਾਓ।" else "Please add your Gemini API key in Settings first."
             e is GeminiException ->
-                (if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ।" else "Sorry Sir, something went wrong.") + " (${e.code})"
+                (if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ।" else "Sorry Sir, something went wrong.") + " (${e.code})" +
+                    (if (e.code == 400) "\n" + e.message.orEmpty().removePrefix("Gemini error 400: ").take(160) else "")
             else ->
                 (if (punjabi) "ਮਾਫ਼ ਕਰਨਾ ਸਰ, ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ।" else "Sorry Sir, something went wrong.") +
                     " (${e.javaClass.simpleName})"
