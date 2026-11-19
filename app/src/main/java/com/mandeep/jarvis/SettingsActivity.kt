@@ -152,7 +152,7 @@ class SettingsActivity : Activity() {
             isClickable = true
             setOnClickListener { finish() }
             addView(GlyphView(context, Glyph.BACK, p.accent), LinearLayout.LayoutParams(dp(26), dp(26)))
-            addView(Ui.text(context, if (isMain) "Jarvis" else getString0(), 17f, p.accent))
+            addView(Ui.text(context, if (isMain) "Singh AI" else getString0(), 17f, p.accent))
         }
         bar.addView(back, FrameLayout.LayoutParams(-2, -1, Gravity.START))
         val smallTitle = Ui.text(this, title, 17f, p.text, Ui.medium).apply {
@@ -383,7 +383,7 @@ class SettingsActivity : Activity() {
         }
         header.addView(avatar, LinearLayout.LayoutParams(dp(60), dp(60)).apply { marginEnd = dp(14) })
         val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        texts.addView(Ui.text(this, "Jarvis", 22f, p.text, Ui.medium))
+        texts.addView(Ui.text(this, "Singh AI", 22f, p.text, Ui.medium))
         texts.addView(Ui.text(this, "Gemini · ਪੰਜਾਬੀ + English", 14f, p.muted))
         header.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
         section(c, null, listOf(Row(header, false)))
@@ -407,7 +407,7 @@ class SettingsActivity : Activity() {
                     prefs.edit().putBoolean("fallback_on", it).apply()
                 })
             ),
-            "Server busy (503) hove taan Jarvis 1, 2 te 4 second baad dubara koshish karda hai, fer Backup Model warat'da hai."
+            "Server busy (503) hove taan Singh AI 1, 2 te 4 second baad dubara koshish karda hai, fer Backup Model warat'da hai."
         )
 
         // ---- Voice
@@ -426,11 +426,11 @@ class SettingsActivity : Activity() {
                 row("Keep Listening", Glyph.CHAT, iosGreen, toggle = prefs.getBoolean("keep_talking", true), onToggle = {
                     prefs.edit().putBoolean("keep_talking", it).apply()
                 }),
-                row("Side Key → Jarvis", Glyph.MIC, iosPurple, chevron = true) {
-                    openSetting(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), "Digital assistant app → Jarvis chuno")
+                row("Side Key → Singh AI", Glyph.MIC, iosPurple, chevron = true) {
+                    openSetting(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), "Digital assistant app → Singh AI chuno")
                 }
             ),
-            "Auto Listen: app khuldi hi mic chal penda hai. Keep Listening: jawab den ton baad aap hi fer sunda hai. Side key lamba dabao te Jarvis khul ke sunna shuru kar dinda hai."
+            "Auto Listen: app khuldi hi mic chal penda hai. Keep Listening: jawab den ton baad aap hi fer sunda hai. Side key lamba dabao te Singh AI khul ke sunna shuru kar dinda hai."
         )
 
         // ---- Appearance
@@ -461,17 +461,26 @@ class SettingsActivity : Activity() {
                     requestPermissions(perms, REQ_ALL)
                 },
                 row("Screen Control", Glyph.PERSON, iosBlue, value = on(access), valueColor = onColor(access), chevron = true) {
-                    openSetting(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), "Installed apps → Jarvis screen control → ON")
+                    openSetting(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), "Installed apps → Singh AI screen control → ON")
                 },
                 row("Read Notifications", Glyph.BELL, iosRed, value = on(notif), valueColor = onColor(notif), chevron = true) {
-                    openSetting(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS), "Jarvis nu ON karo")
+                    openSetting(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS), "Singh AI nu ON karo")
                 },
                 row("Change Brightness", Glyph.SUN, iosOrange, value = on(bright), valueColor = onColor(bright), chevron = true) {
                     openSetting(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")), "Allow karo")
                 },
                 row("'Restricted setting' Help", Glyph.LOCK, iosGray, chevron = true) { showRestrictedHelp() }
             ),
-            "Screen Control naal Jarvis kise vi app vich tap, type te scroll kar sakda hai."
+            "Screen Control naal Singh AI kise vi app vich tap, type te scroll kar sakda hai."
+        )
+
+        // ---- Memory
+        val mem = Memory.all(this)
+        section(
+            c, "Memory", listOf(
+                row("What Singh AI remembers", Glyph.STAR, iosOrange, value = "${mem.size}", chevron = true) { showMemory() }
+            ),
+            "Bolo \"yaad rakh…\" te Singh AI hamesha yaad rakhega (naam, ghar wale, pasand). \"Bhul ja…\" kaho taan mita dinda hai."
         )
 
         // ---- About
@@ -482,8 +491,8 @@ class SettingsActivity : Activity() {
             c, "About", listOf(
                 row("Version", Glyph.INFO, iosGray, value = version),
                 row("GitHub", Glyph.CODE, if (p.dark) Color.parseColor("#636366") else Color.parseColor("#1C1C1E"),
-                    value = "singh776/Jarviss", chevron = true) {
-                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/singh776/Jarviss"))) }
+                    value = "singh776/Jarvis", chevron = true) {
+                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/singh776/Jarvis"))) }
                     catch (e: Exception) {}
                 }
             ),
@@ -570,7 +579,7 @@ class SettingsActivity : Activity() {
         f.setOnEditorActionListener { _, _, _ -> saveKey(); true }
         keyField = f
         section(c, "Gemini API key", listOf(Row(f, false)),
-            "Jarvis da dimaag Google Gemini hai. Muft key lao: aistudio.google.com/apikey → \"Create API key\" → copy karke ethe paste karo → Save.")
+            "Singh AI da dimaag Google Gemini hai. Muft key lao: aistudio.google.com/apikey → \"Create API key\" → copy karke ethe paste karo → Save.")
         section(c, null, listOf(
             row("Test key", Glyph.CHECK, iosGreen, chevron = true) { testKey() },
             row("Get a free key", Glyph.KEY, iosOrange, chevron = true) {
@@ -651,6 +660,22 @@ class SettingsActivity : Activity() {
         } catch (e: Exception) {
             startActivity(Intent(Settings.ACTION_SETTINGS))
         }
+    }
+
+    private fun showMemory() {
+        val mem = Memory.all(this)
+        AlertDialog.Builder(this, Ui.dialogTheme(this))
+            .setTitle("Memory (${mem.size})")
+            .setMessage(if (mem.isEmpty()) "Haje kuch yaad nahi. Bolo: \"yaad rakh mera naam … hai\"." else mem.joinToString("\n") { "• $it" })
+            .setPositiveButton("OK", null)
+            .setNegativeButton("Clear all") { _, _ ->
+                AlertDialog.Builder(this, Ui.dialogTheme(this))
+                    .setMessage("Saari memory mita deyiye?")
+                    .setPositiveButton("Haan, mitao") { _, _ -> Memory.clear(this); build() }
+                    .setNegativeButton("Nahi", null)
+                    .show()
+            }
+            .show()
     }
 
     private fun showRestrictedHelp() {

@@ -19,7 +19,7 @@ import kotlin.math.sin
 /** Simple line icons drawn in code (no image files needed). */
 enum class Glyph {
     GEAR, SEND, MIC, KEY, SPARKLE, LAYERS, GLOBE, SPEED, CHAT, MOON, PALETTE, SHIELD, BELL, SUN, PERSON,
-    STAR, INFO, CODE, LOCK, CHECK, BACK, CHEVRON, TRASH
+    STAR, INFO, CODE, LOCK, CHECK, BACK, CHEVRON, TRASH, PLUS, CAMERA, IMAGE, FILE, SCREEN, CLOSE
 }
 
 object Glyphs {
@@ -207,6 +207,53 @@ object Glyphs {
                 path.lineTo(cx + s * 0.3f, cy)
                 path.lineTo(cx - s * 0.25f, cy + s * 0.6f)
                 c.drawPath(path, p)
+            }
+            Glyph.PLUS -> {
+                p.strokeWidth = sw * 1.3f
+                c.drawLine(cx - s * 0.65f, cy, cx + s * 0.65f, cy, p)
+                c.drawLine(cx, cy - s * 0.65f, cx, cy + s * 0.65f, p)
+            }
+            Glyph.CLOSE -> {
+                p.strokeWidth = sw * 1.3f
+                c.drawLine(cx - s * 0.5f, cy - s * 0.5f, cx + s * 0.5f, cy + s * 0.5f, p)
+                c.drawLine(cx + s * 0.5f, cy - s * 0.5f, cx - s * 0.5f, cy + s * 0.5f, p)
+            }
+            Glyph.CAMERA -> {
+                r.set(cx - s * 0.8f, cy - s * 0.45f, cx + s * 0.8f, cy + s * 0.65f)
+                c.drawRoundRect(r, s * 0.18f, s * 0.18f, p)
+                c.drawCircle(cx, cy + s * 0.1f, s * 0.3f, p)
+                c.drawLine(cx - s * 0.3f, cy - s * 0.45f, cx - s * 0.18f, cy - s * 0.68f, p)
+                c.drawLine(cx - s * 0.18f, cy - s * 0.68f, cx + s * 0.18f, cy - s * 0.68f, p)
+                c.drawLine(cx + s * 0.18f, cy - s * 0.68f, cx + s * 0.3f, cy - s * 0.45f, p)
+            }
+            Glyph.IMAGE -> {
+                r.set(cx - s * 0.75f, cy - s * 0.65f, cx + s * 0.75f, cy + s * 0.65f)
+                c.drawRoundRect(r, s * 0.2f, s * 0.2f, p)
+                c.drawCircle(cx + s * 0.3f, cy - s * 0.25f, s * 0.14f, p)
+                path.moveTo(cx - s * 0.75f, cy + s * 0.4f)
+                path.lineTo(cx - s * 0.2f, cy - s * 0.05f)
+                path.lineTo(cx + s * 0.3f, cy + s * 0.4f)
+                path.lineTo(cx + s * 0.5f, cy + s * 0.2f)
+                path.lineTo(cx + s * 0.75f, cy + s * 0.45f)
+                c.drawPath(path, p)
+            }
+            Glyph.FILE -> {
+                path.moveTo(cx - s * 0.55f, cy - s * 0.8f)
+                path.lineTo(cx + s * 0.2f, cy - s * 0.8f)
+                path.lineTo(cx + s * 0.55f, cy - s * 0.45f)
+                path.lineTo(cx + s * 0.55f, cy + s * 0.8f)
+                path.lineTo(cx - s * 0.55f, cy + s * 0.8f)
+                path.close()
+                c.drawPath(path, p)
+                c.drawLine(cx - s * 0.3f, cy + s * 0.05f, cx + s * 0.3f, cy + s * 0.05f, p)
+                c.drawLine(cx - s * 0.3f, cy + s * 0.35f, cx + s * 0.3f, cy + s * 0.35f, p)
+            }
+            Glyph.SCREEN -> {
+                r.set(cx - s * 0.5f, cy - s * 0.85f, cx + s * 0.5f, cy + s * 0.85f)
+                c.drawRoundRect(r, s * 0.18f, s * 0.18f, p)
+                c.drawLine(cx, cy + s * 0.25f, cx, cy - s * 0.35f, p)
+                c.drawLine(cx - s * 0.22f, cy - s * 0.12f, cx, cy - s * 0.35f, p)
+                c.drawLine(cx + s * 0.22f, cy - s * 0.12f, cx, cy - s * 0.35f, p)
             }
             Glyph.TRASH -> {
                 c.drawLine(cx - s * 0.7f, cy - s * 0.5f, cx + s * 0.7f, cy - s * 0.5f, p)

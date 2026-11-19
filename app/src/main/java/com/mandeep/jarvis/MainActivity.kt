@@ -8,7 +8,11 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.ContentValues
 import android.content.res.Configuration
+import android.net.Uri
+import android.provider.MediaStore
+import android.widget.ImageView
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.BatteryManager
@@ -60,6 +64,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var thinkingBubble: TextView? = null
     private var thinkingAnim: ObjectAnimator? = null
     private var mode = OrbView.Mode.IDLE
+
+    // ---- "+" attachments (photo / camera / screen / file)
+    private var attachment: Attachment? = null
+    private lateinit var attachChip: LinearLayout
+    private lateinit var attachThumb: ImageView
+    private lateinit var attachLabel: TextView
 
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
@@ -116,6 +126,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         if (brain.apiKey.isEmpty()) openSettings(SettingsActivity.PAGE_APIKEY)
         handleAssist(intent)
+        handleScreenshot(intent)
     }
 
     override fun onResume() {
@@ -168,6 +179,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         setIntent(intent)
         if (showingCrash) return
         handleAssist(intent)
+        handleScreenshot(intent)
     }
 
     /** Opened from the side key / "Digital assistant" gesture: start listening right away. */
@@ -228,8 +240,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         top.addView(langBtn, FrameLayout.LayoutParams(-2, dp(36), Gravity.START or Gravity.CENTER_VERTICAL))
 
         val title = GradientText(this).apply {
-            text = "MOMI"
-            letterSpacing = 0.12f
+            text = "Singh AI"
+            letterSpacing = 0.02f
             textSize = 24f
             typeface = Ui.medium
             gravity = Gravity.CENTER
@@ -284,12 +296,51 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         scroll.addView(chat, ViewGroup.LayoutParams(-1, -2))
         col.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1.15f))
 
-        // ---- bottom bar: [ text pill (send) ] (mic)
+        // ---- attachment chip (shows the photo / screenshot / file you're asking about)
+        attachChip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.rounded(p.surface, dp(16).toFloat(), p.separator, if (p.dark) 0 else 1)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            visibility = View.GONE
+        }
+        attachThumb = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = Ui.rounded(p.surface2, dp(10).toFloat())
+            clipToOutline = true
+            outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
+        }
+        attachChip.addView(attachThumb, LinearLayout.LayoutParams(dp(48), dp(48)))
+        attachLabel = Ui.text(this, "", 14f, p.text, Ui.medium).apply {
+            setPadding(dp(10), 0, dp(6), 0)
+            maxLines = 2
+        }
+        attachChip.addView(attachLabel, LinearLayout.LayoutParams(0, -2, 1f))
+        val chipClose = GlyphView(this, Glyph.CLOSE, p.muted).apply {
+            glyphScale = 0.45f
+            isClickable = true
+            contentDescription = "Remove"
+            setOnClickListener { setAttachment(null) }
+        }
+        attachChip.addView(chipClose, LinearLayout.LayoutParams(dp(36), dp(36)))
+        col.addView(attachChip, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) })
+
+        // ---- bottom bar: (+) [ text pill (send) ] (mic)
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(8), 0, dp(10))
         }
+        val plus = GlyphView(this, Glyph.PLUS, p.text).apply {
+            bgColor = p.surface
+            circleBg = true
+            glyphScale = 0.42f
+            isClickable = true
+            contentDescription = "Add photo, camera, screen or file"
+            elevation = if (p.dark) 0f else dp(2).toFloat()
+            setOnClickListener { showAttachSheet() }
+        }
+        bar.addView(plus, LinearLayout.LayoutParams(dp(50), dp(50)).apply { marginEnd = dp(8) })
         val pill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -298,7 +349,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             elevation = if (p.dark) 0f else dp(2).toFloat()
         }
         input = EditText(this).apply {
-            hint = if (punjabi) "Jarvis nu puchho…" else "Ask Jarvis…"
+            hint = if (punjabi) "Singh AI nu puchho…" else "Ask Singh AI…"
             background = null
             textSize = 16f
             setTextColor(p.text)
@@ -326,7 +377,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: Editable?) { showSend(!s.isNullOrBlank()) }
+            override fun afterTextChanged(s: Editable?) { showSend(!s.isNullOrBlank() || attachment != null) }
         })
         bar.addView(pill, LinearLayout.LayoutParams(0, dp(54), 1f))
 
@@ -341,6 +392,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         Ui.onInsets(root) { t, b -> col.setPadding(dp(16), t, dp(16), b) }
         setContentView(root)
+
+        refreshAttachChip()
 
         // restore the conversation (no animation)
         for (m in messages) addBubbleView(m.user, m.text, animate = false)
@@ -507,8 +560,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (prefs.getBoolean("greeted", false).not()) {
             prefs.edit().putBoolean("greeted", true).apply()
             say(
-                if (punjabi && punjabiVoice) "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਸਰ! ਮੈਂ ਜਾਰਵਿਸ ਹਾਂ। ਗੋਲੇ ਨੂੰ ਛੂਹੋ ਤੇ ਬੋਲੋ।"
-                else "Sat Sri Akal, Sir. Jarvis online. Tap the orb and speak.",
+                if (punjabi && punjabiVoice) "ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਸਰ! ਮੈਂ ਸਿੰਘ AI ਹਾਂ। ਬੋਲੋ, ਕੀ ਕੰਮ ਕਰਾਂ?"
+                else "Sat Sri Akal, Sir. Singh AI online. Tap the orb and speak.",
                 listenAfter = autoListen
             )
         }
@@ -638,7 +691,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun sendTyped() {
         val text = input.text.toString().trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty() && attachment == null) return
         input.setText("")
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)
             .hideSoftInputFromWindow(input.windowToken, 0)
@@ -648,7 +701,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun handle(text: String, fromVoice: Boolean = true) {
         if (busy) return
         busy = true
-        finishUserText(text)
+        val file = attachment
+        val shown = if (file != null) {
+            val q = text.ifBlank { if (punjabi) "ਇਸ ਵਿੱਚ ਕੀ ਹੈ?" else "What is this?" }
+            (if (file.mime.startsWith("image/")) "🖼  " else "📄  ") + q
+        } else text
+        finishUserText(shown)
         showThinking()
         setMode(OrbView.Mode.THINKING)
         setStatus(if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…")
@@ -659,7 +717,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         Thread {
             var failed = false
             val result: Reply = try {
-                brain.ask(text, pa, paVoice, info)
+                if (file != null) Reply(brain.askAbout(text, file, pa, paVoice), null)
+                else brain.ask(text, pa, paVoice, info)
             } catch (e: Exception) {
                 failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
@@ -700,6 +759,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val data = res.followUp
         when {
             task != null && task.isNotBlank() -> startTask(task, result.say, pa)
+            res.pressSend -> {
+                // WhatsApp is open with the message typed — screen control taps Send right away.
+                // (screen control says "sent" out loud itself, so only show it here)
+                JarvisAccess.instance?.pressSendSoon(pa)
+                hideThinking()
+                addMessage(false, result.say.ifBlank { if (pa) "ਭੇਜ ਰਿਹਾ ਹਾਂ…" else "Sending it, Sir…" })
+                setMode(OrbView.Mode.IDLE)
+                setStatus(idleText())
+            }
             data != null -> {
                 busy = true
                 showThinking()
@@ -765,7 +833,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun openAccessibility() {
         try {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            Toast.makeText(this, "Installed apps → Jarvis screen control → ON", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Installed apps → Singh AI screen control → ON", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             startActivity(Intent(Settings.ACTION_SETTINGS))
         }
@@ -773,10 +841,213 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     // ===================================================================== misc
 
+    // ============================================================ attachments
+
+    private fun setAttachment(a: Attachment?) {
+        attachment = a
+        refreshAttachChip()
+        if (a != null) {
+            setStatus(
+                if (punjabi) "ਹੁਣ ਪੁੱਛੋ — ਜਿਵੇਂ \"ਕੀ ਲਿਖਿਆ?\", \"ਪੰਜਾਬੀ ਵਿੱਚ ਦੱਸੋ\", \"ਇਹ ਕੀ ਹੈ?\""
+                else "Now ask — e.g. \"read it\", \"translate to Punjabi\", \"what is this?\""
+            )
+        }
+    }
+
+    private fun refreshAttachChip() {
+        if (!::attachChip.isInitialized) return
+        val a = attachment
+        if (a == null) {
+            attachChip.visibility = View.GONE
+            showSend(input.text.isNotBlank())
+            return
+        }
+        attachChip.visibility = View.VISIBLE
+        if (a.thumb != null) attachThumb.setImageBitmap(a.thumb) else attachThumb.setImageDrawable(null)
+        attachLabel.text = when {
+            a.label == "screenshot" -> if (punjabi) "ਸਕਰੀਨ" else "Screen"
+            a.mime == "application/pdf" -> "PDF"
+            a.mime.startsWith("image/") -> if (punjabi) "ਫ਼ੋਟੋ" else "Photo"
+            else -> if (punjabi) "ਫ਼ਾਈਲ" else "File"
+        }
+        showSend(true)
+    }
+
+    /** Gemini-style "+" sheet: Camera · Photos · Screen · Files. */
+    private fun showAttachSheet() {
+        val d = android.app.Dialog(this)
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(28))
+            background = GradientDrawable().apply {
+                setColor(p.surface)
+                val r = dp(28).toFloat()
+                cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
+            }
+        }
+        val handle = View(this).apply { background = Ui.rounded(p.separator, dp(3).toFloat()) }
+        box.addView(handle, LinearLayout.LayoutParams(dp(44), dp(5)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(18)
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun tile(g: Glyph, label: String, onTap: () -> Unit) {
+            val t = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(0, dp(18), 0, dp(14))
+                background = Ui.pressable(
+                    Ui.rounded(p.surface2, dp(26).toFloat()),
+                    Ui.rounded(p.separator, dp(26).toFloat())
+                )
+                isClickable = true
+                setOnClickListener { d.dismiss(); onTap() }
+            }
+            t.addView(GlyphView(this, g, p.text).apply { glyphScale = 0.62f }, LinearLayout.LayoutParams(dp(34), dp(34)))
+            t.addView(Ui.text(this, label, 14f, p.text).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, 0)
+            })
+            row.addView(t, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        }
+        val pa = punjabi
+        tile(Glyph.CAMERA, if (pa) "ਕੈਮਰਾ" else "Camera") { openCamera() }
+        tile(Glyph.IMAGE, if (pa) "ਫ਼ੋਟੋ" else "Photos") { pickPhoto() }
+        tile(Glyph.SCREEN, if (pa) "ਸਕਰੀਨ" else "Screen") { shareScreen() }
+        tile(Glyph.FILE, if (pa) "ਫ਼ਾਈਲ" else "Files") { pickFile() }
+        box.addView(row)
+        box.addView(Ui.text(this,
+            if (pa) "ਫ਼ੋਟੋ ਜਾਂ ਸਕਰੀਨ ਦਿਖਾ ਕੇ ਪੁੱਛੋ: ਪੜ੍ਹ ਕੇ ਦੱਸੋ, ਟਰਾਂਸਲੇਟ ਕਰੋ, ਇਹ ਕੀ ਹੈ…"
+            else "Show a photo or your screen and ask: read it, translate it, what is this…",
+            13f, p.muted).apply { gravity = Gravity.CENTER; setPadding(dp(8), dp(16), dp(8), 0) })
+
+        d.setContentView(box)
+        d.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.BOTTOM)
+            setWindowAnimations(android.R.style.Animation_InputMethod)
+        }
+        d.show()
+    }
+
+    private fun openCamera() {
+        val i = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        var uri: Uri? = null
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            val v = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "singhai_${System.currentTimeMillis()}.jpg")
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/SinghAI")
+            }
+            uri = try { contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v) } catch (e: Exception) { null }
+        }
+        if (uri != null) {
+            i.putExtra(MediaStore.EXTRA_OUTPUT, uri)
+            i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        prefs.edit().putString("camera_uri", uri?.toString() ?: "").apply()
+        try {
+            startActivityForResult(i, REQ_CAMERA)
+        } catch (e: Exception) {
+            toast(if (punjabi) "ਕੈਮਰਾ ਨਹੀਂ ਖੁੱਲ੍ਹਿਆ" else "Couldn't open the camera")
+        }
+    }
+
+    private fun pickPhoto() {
+        val i = if (android.os.Build.VERSION.SDK_INT >= 33) Intent(MediaStore.ACTION_PICK_IMAGES)
+        else Intent(Intent.ACTION_GET_CONTENT).setType("image/*")
+        try { startActivityForResult(i, REQ_PHOTO) } catch (e: Exception) {
+            startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).setType("image/*"), REQ_PHOTO)
+        }
+    }
+
+    private fun pickFile() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "application/pdf", "text/plain"))
+        try { startActivityForResult(i, REQ_FILE) } catch (e: Exception) {
+            toast(if (punjabi) "ਫ਼ਾਈਲਾਂ ਨਹੀਂ ਖੁੱਲ੍ਹੀਆਂ" else "Couldn't open files")
+        }
+    }
+
+    /** Floating button over other apps — go to any screen, tap it, and ask about that screen. */
+    private fun shareScreen() {
+        val svc = JarvisAccess.instance
+        if (svc == null) {
+            AlertDialog.Builder(this, Ui.dialogTheme(this))
+                .setTitle(if (punjabi) "ਸਕਰੀਨ ਕੰਟਰੋਲ ਚਾਲੂ ਕਰੋ" else "Turn on Screen Control")
+                .setMessage(
+                    if (punjabi) "ਸਕਰੀਨ ਦਿਖਾਉਣ ਲਈ Singh AI ਨੂੰ Screen Control ਚਾਹੀਦਾ ਹੈ। Installed apps → Singh AI screen control → ON."
+                    else "To see your screen, Singh AI needs Screen Control. Installed apps → Singh AI screen control → ON."
+                )
+                .setPositiveButton("OK") { _, _ -> openAccessibility() }
+                .setNegativeButton(if (punjabi) "ਰਹਿਣ ਦਿਓ" else "Cancel", null)
+                .show()
+            return
+        }
+        svc.startScreenShare(punjabi)
+        toast(
+            if (punjabi) "ਜਿਹੜੀ ਸਕਰੀਨ ਦਿਖਾਉਣੀ ਹੈ ਉੱਥੇ ਜਾਓ, ਫਿਰ ਨੀਲਾ ਬਟਨ ਦਬਾਓ"
+            else "Go to the screen you want, then tap the floating button"
+        )
+        moveTaskToBack(true)
+    }
+
+    private fun handleScreenshot(i: Intent?) {
+        if (i == null || !i.hasExtra(EXTRA_SCREENSHOT)) return
+        val path = i.getStringExtra(EXTRA_SCREENSHOT).orEmpty()
+        i.removeExtra(EXTRA_SCREENSHOT)
+        if (path.isEmpty()) {
+            toast(if (punjabi) "ਸਕਰੀਨ ਦੀ ਫ਼ੋਟੋ ਨਹੀਂ ਲੈ ਸਕਿਆ" else "Couldn't capture the screen")
+            return
+        }
+        Thread {
+            val a = try { Attach.fromFile(this, path, "screenshot") } catch (e: Exception) { null }
+            runOnUiThread { if (a != null) setAttachment(a) }
+        }.start()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_CAMERA && requestCode != REQ_PHOTO && requestCode != REQ_FILE) return
+        val camUri = prefs.getString("camera_uri", "").orEmpty().takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }
+        if (resultCode != RESULT_OK) {
+            if (requestCode == REQ_CAMERA && camUri != null) try { contentResolver.delete(camUri, null, null) } catch (e: Exception) {}
+            return
+        }
+        Thread {
+            val a: Attachment? = try {
+                when (requestCode) {
+                    REQ_CAMERA -> {
+                        if (camUri != null) {
+                            val r = Attach.fromUri(this, camUri, "photo")
+                            try { contentResolver.delete(camUri, null, null) } catch (e: Exception) {}
+                            r
+                        } else {
+                            @Suppress("DEPRECATION")
+                            val bmp = data?.extras?.get("data") as? android.graphics.Bitmap
+                            bmp?.let { Attach.fromBitmap(it, "photo") }
+                        }
+                    }
+                    REQ_PHOTO -> data?.data?.let { Attach.fromUri(this, it, "photo") }
+                    else -> data?.data?.let { Attach.fromUri(this, it, "file") }
+                }
+            } catch (e: Exception) { null }
+            runOnUiThread {
+                if (a != null) setAttachment(a)
+                else toast(if (punjabi) "ਇਹ ਫ਼ਾਈਲ ਨਹੀਂ ਪੜ੍ਹ ਸਕਿਆ (8MB ਤੋਂ ਛੋਟੀ ਹੋਵੇ)" else "Couldn't read that (max 8 MB)")
+            }
+        }.start()
+    }
+
     private fun updateLangButton() {
         if (!::langBtn.isInitialized) return
         langBtn.text = if (punjabi) "ਪੰਜਾਬੀ" else "EN"
-        input.hint = if (punjabi) "Jarvis nu puchho…" else "Ask Jarvis…"
+        input.hint = if (punjabi) "Singh AI nu puchho…" else "Ask Singh AI…"
     }
 
     private fun idleText() =
@@ -817,5 +1088,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         private const val REQ_MIC = 7
+        private const val REQ_CAMERA = 21
+        private const val REQ_PHOTO = 22
+        private const val REQ_FILE = 23
+        const val EXTRA_SCREENSHOT = "screenshot_path"
     }
 }

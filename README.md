@@ -24,6 +24,19 @@ Is repo vich code push hunde hi **GitHub Actions** aap APK bana dinda hai (3–5
 2. Sab ton upar wali release vich `Jarvis.apk` te tap karo → download.
 3. Install karo (pehli vaar "Install unknown apps" di permission deni paindi hai).
 
+## Nawan v2.6
+- **"+" button (Gemini wangu):** Camera · Photos · Screen · Files.
+  - Photo khicho ja chuno, ja PDF/file pao, te puchho: "ki likhya?", "Punjabi vich translate karo", "eh ki hai?"
+  - **Screen:** Singh AI piche chala janda, ik chamakda button aunda. Jehri screen dikhauni hai othe jao, button dabao — Singh AI us screen di photo naal wapas aunda. (Screen Control ON chahida.)
+  - Photo upar chip vich rehndi hai, tusi us baare kinne vi sawal puchh sakde ho; ✕ naal hatao.
+
+## Nawan v2.5
+- Naam hun **Singh AI** (upar te app icon de thalle).
+- **WhatsApp seedha:** "Harpreet nu WhatsApp te bhej ki main aa reha" → chat seedhi khuldi, message likhya jaanda te Send aap dabda (Screen Control ON hove). "Likh de" kaho taan sirf likhda, bhejda nahi. Hun koi "bhejna hai?" wala sawal nahi.
+- **Tez:** screen control hun screen rukan di udeek karda, lambi wait nahi; app pehlan seedhi khuldi hai.
+- **Yaad rakhda hai:** "yaad rakh mera naam Mandeep hai" → hamesha yaad. Gallan app band karan ton baad vi yaad. Settings → Memory vich dekho / mitao.
+- Nawe kamm: gaana chalao (Spotify / YouTube Music), Maps te rasta.
+
 ## Nawan v2.4
 - Upar **MOMI** likhya aunda hai.
 - **Auto Listen:** app khuldi hi mic aap chal penda hai, te jawab den ton baad fer sunda hai (Settings → Voice).

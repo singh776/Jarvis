@@ -53,6 +53,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         stopRequested = true
         hidePill()
+        stopScreenShare()
         tts?.shutdown()
         if (instance === this) instance = null
         super.onDestroy()
@@ -79,6 +80,133 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         return performGlobalAction(a)
     }
 
+    // ------------------------------------------------------ screen share
+
+    private var capturePill: TextView? = null
+
+    /**
+     * "Screen share": shows a floating button over other apps. Go to any screen, tap it,
+     * and Singh AI comes back with a screenshot of that screen attached, ready for your question.
+     */
+    fun startScreenShare(punjabi: Boolean) {
+        main.post {
+            if (capturePill != null) return@post
+            val wm = getSystemService(WindowManager::class.java) ?: return@post
+            val d = resources.displayMetrics.density
+            val v = TextView(this).apply {
+                text = if (punjabi) "  📸  ਇਸ ਸਕਰੀਨ ਬਾਰੇ ਪੁੱਛੋ  " else "  📸  Ask about this screen  "
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                val pad = (12 * d).toInt()
+                setPadding(pad * 2, pad, pad * 2, pad)
+                background = android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(Color.parseColor("#4C8DFF"), Color.parseColor("#9B72FF"), Color.parseColor("#FF5FA2"))
+                ).apply { cornerRadius = 28 * d }
+                elevation = 8 * d
+                setOnClickListener { captureAndReturn() }
+                setOnLongClickListener { stopScreenShare(); true }
+            }
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                y = (110 * d).toInt()
+            }
+            try { wm.addView(v, lp); capturePill = v } catch (e: Exception) { capturePill = null }
+        }
+    }
+
+    fun stopScreenShare() {
+        val v = capturePill ?: return
+        capturePill = null
+        main.post { try { getSystemService(WindowManager::class.java)?.removeView(v) } catch (e: Exception) {} }
+    }
+
+    private fun captureAndReturn() {
+        stopScreenShare()
+        if (Build.VERSION.SDK_INT < 30) {
+            openSinghAI(null)
+            return
+        }
+        // wait for the floating button to disappear, then take the screenshot
+        main.postDelayed({
+            try {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        var path: String? = null
+                        try {
+                            val hb = result.hardwareBuffer
+                            val hw = android.graphics.Bitmap.wrapHardwareBuffer(hb, result.colorSpace)
+                            val bmp = hw?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                            hb.close()
+                            if (bmp != null) {
+                                val f = java.io.File(cacheDir, "screen.jpg")
+                                f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, it) }
+                                path = f.absolutePath
+                            }
+                        } catch (e: Exception) {}
+                        openSinghAI(path)
+                    }
+
+                    override fun onFailure(errorCode: Int) { openSinghAI(null) }
+                })
+            } catch (e: Exception) {
+                openSinghAI(null)
+            }
+        }, 350)
+    }
+
+    private fun openSinghAI(screenshotPath: String?) {
+        val i = android.content.Intent(this, MainActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(MainActivity.EXTRA_SCREENSHOT, screenshotPath ?: "")
+        startActivity(i)
+    }
+
+    // ------------------------------------------------- fast WhatsApp send
+
+    /** Waits for WhatsApp's Send button (message already typed) and taps it — no AI steps needed. */
+    fun pressSendSoon(punjabi: Boolean) {
+        Thread {
+            var sent = false
+            val end = System.currentTimeMillis() + 9000
+            Thread.sleep(700)
+            while (!sent && System.currentTimeMillis() < end) {
+                val root = rootInActiveWindow
+                val pkg = root?.packageName?.toString().orEmpty()
+                if (root != null && pkg.startsWith("com.whatsapp")) {
+                    val btn = root.findAccessibilityNodeInfosByViewId("$pkg:id/send").firstOrNull()
+                        ?: findByDesc(root, listOf("send", "ਭੇਜੋ", "भेजें", "भेजो"))
+                    if (btn != null && btn.isVisibleToUser) {
+                        click(btn)
+                        sent = true
+                        break
+                    }
+                }
+                Thread.sleep(250)
+            }
+            main.post {
+                speak(
+                    if (sent) (if (punjabi) "ਭੇਜ ਦਿੱਤਾ।" else "Sent, Sir.")
+                    else (if (punjabi) "ਸੁਨੇਹਾ ਲਿਖ ਦਿੱਤਾ, Send ਦਬਾ ਦਿਓ।" else "Message is typed, please tap Send.")
+                )
+            }
+        }.start()
+    }
+
+    private fun findByDesc(n: AccessibilityNodeInfo?, words: List<String>, depth: Int = 0): AccessibilityNodeInfo? {
+        if (n == null || depth > 40) return null
+        val d = n.contentDescription?.toString()?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        if (d.isNotEmpty() && words.any { d == it }) return n
+        for (i in 0 until n.childCount) findByDesc(n.getChild(i), words, depth + 1)?.let { return it }
+        return null
+    }
+
     // ------------------------------------------------------------ the agent
 
     /** Starts an on-screen task in the background. */
@@ -90,7 +218,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         }
         running = true
         stopRequested = false
-        showPill("Jarvis kamm kar reha… ✕")
+        showPill("Singh AI kamm kar reha… ✕")
         Thread {
             val result = try {
                 agentLoop(goal, punjabi)
@@ -108,10 +236,10 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
 
     private fun agentLoop(goal: String, punjabi: Boolean): String {
         val steps = ArrayList<String>()
-        Thread.sleep(900) // let the screen settle after Jarvis goes to the background
+        Thread.sleep(600) // let the screen settle after the app goes to the background
         for (step in 1..MAX_STEPS) {
             if (stopRequested) return if (punjabi) "ਠੀਕ ਹੈ, ਰੋਕ ਦਿੱਤਾ।" else "Stopped, Sir."
-            main.post { pill?.text = "Jarvis: step $step… ✕" }
+            main.post { pill?.text = "Singh AI: step $step… ✕" }
 
             val nodes = ArrayList<AccessibilityNodeInfo>()
             val screen = snapshot(nodes)
@@ -139,9 +267,34 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
                 else -> {}
             }
             steps.add("$step. $kind${if (id >= 0) " [$id]" else ""} ${a.optString("text", a.optString("name", a.optString("direction", "")))} — $note".trim())
-            Thread.sleep(1400)
+            waitForScreen(if (kind == "open_app") 1500L else 900L)
         }
         return if (punjabi) "ਬਹੁਤ ਕਦਮ ਹੋ ਗਏ, ਮੈਂ ਰੁਕ ਗਿਆ। ਬਾਕੀ ਤੁਸੀਂ ਦੇਖ ਲਓ।" else "That took too many steps, Sir. I stopped — please check the screen."
+    }
+
+    /** Waits until the screen stops changing (max [maxMs]) instead of a long fixed sleep. */
+    private fun waitForScreen(maxMs: Long) {
+        Thread.sleep(250)
+        var last = screenHash()
+        val end = System.currentTimeMillis() + maxMs
+        while (System.currentTimeMillis() < end) {
+            Thread.sleep(200)
+            val now = screenHash()
+            if (now == last) return
+            last = now
+        }
+    }
+
+    private fun screenHash(): Int {
+        val root = rootInActiveWindow ?: return 0
+        var h = root.packageName?.hashCode() ?: 0
+        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 25) return
+            h = h * 31 + (n.text?.hashCode() ?: 0) + n.childCount
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return h
     }
 
     private fun agentSystem(punjabi: Boolean): String {
@@ -158,7 +311,8 @@ Reply with ONLY one JSON object for the next step:
 {"action":"back"} {"action":"home"} {"action":"wait"}
 {"action":"open_app","name":"<app name>"}
 {"action":"done","say":"<1-2 short spoken sentences in $lang telling the user the result; if the goal was to read something, say what it says>"}
-Rules: take the shortest path; if an element is not visible, scroll; if a popup blocks, close it; after typing a search, click the search/enter button or a suggestion.
+Rules: do EXACTLY the goal — nothing extra, never ask questions; take the shortest path (fewest steps, act fast);
+to message someone in a chat app, use the app's search, open the chat, type in the message box and tap Send only if the goal says send; if an element is not visible, scroll; if a popup blocks, close it; after typing a search, click the search/enter button or a suggestion.
 Never pay, buy, transfer money, enter passwords or card numbers, or delete accounts/data: stop with "done" and tell the user to finish that part themselves.
 If the goal is already complete, reply "done".
 """.trimIndent()

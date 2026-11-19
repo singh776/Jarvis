@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="access_label">Jarvis screen control</string>
-    <string name="access_desc">Jarvis nu screen dekhan te kise vi app vich tap, type te scroll karan dinda hai, taan jo tusi bol ke phone de sare kamm karva sako. Jarvis sirf ohi karda jo tusi kehnde ho.</string>
+    <string name="access_label">Singh AI screen control</string>
+    <string name="access_desc">Singh AI nu screen dekhan te kise vi app vich tap, type te scroll karan dinda hai, taan jo tusi bol ke phone de sare kamm karva sako. Singh AI sirf ohi karda jo tusi kehnde ho.</string>
 </resources>

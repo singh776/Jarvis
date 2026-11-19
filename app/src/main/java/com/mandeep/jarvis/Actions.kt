@@ -13,6 +13,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.AlarmClock
 import android.provider.ContactsContract
+import android.provider.MediaStore
+import android.telephony.TelephonyManager
 import android.provider.Settings
 import android.telephony.SmsManager
 import android.view.KeyEvent
@@ -25,12 +27,14 @@ import java.util.Locale
  * followUp = data the brain should turn into an answer (e.g. notifications)
  * task     = a goal for the on-screen agent (Jarvis taps/types by itself)
  * confirm  = this action needs a yes from the user first; text describes it
+ * pressSend = a chat was opened with the message typed; screen control should tap Send
  */
 data class ActionResult(
     val message: String? = null,
     val followUp: String? = null,
     val task: String? = null,
     val confirm: String? = null,
+    val pressSend: Boolean = false,
 )
 
 /** Carries out the phone action the brain asked for. */
@@ -60,7 +64,9 @@ class Actions(private val activity: Activity) {
                 "global" -> msg(global(action.optString("cmd"), pa))
                 "read_notifications" -> notifications(pa)
                 "settings" -> msg(settings(action.optString("page", "main")))
-                "screen_task" -> ActionResult(task = action.optString("goal"))
+                "screen_task" -> screenTask(action)
+                "play_music" -> msg(playMusic(action.optString("query"), action.optString("app")))
+                "navigate" -> msg(navigate(action.optString("query")))
                 else -> ActionResult()
             }
         } catch (e: ActivityNotFoundException) {
@@ -189,8 +195,8 @@ class Actions(private val activity: Activity) {
     private fun sms(action: JSONObject, pa: Boolean, confirmed: Boolean): ActionResult {
         val (who, number) = target(action) ?: return ActionResult(noContact(action, pa))
         val text = action.optString("text")
-        if (!confirmed) return ActionResult(confirm = p(pa, "$who ਨੂੰ SMS:\n\"$text\"", "SMS to $who:\n\"$text\""))
-        if (!granted(Manifest.permission.SEND_SMS)) {
+        val send = action.optBoolean("send", true)
+        if (!send || !granted(Manifest.permission.SEND_SMS)) {
             // No permission: open the messages app with the text ready.
             start(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(number))).putExtra("sms_body", text))
             return ActionResult()
@@ -199,26 +205,109 @@ class Actions(private val activity: Activity) {
         val sm: SmsManager = if (Build.VERSION.SDK_INT >= 31)
             activity.getSystemService(SmsManager::class.java) else SmsManager.getDefault()
         sm.sendMultipartTextMessage(number, null, sm.divideMessage(text), null, null)
-        return ActionResult()
+        return ActionResult(message = p(pa, "$who ਨੂੰ SMS ਭੇਜ ਦਿੱਤਾ।", "SMS sent to $who."))
     }
 
-    private fun whatsappTo(action: JSONObject, pa: Boolean, confirmed: Boolean): ActionResult {
+    /**
+     * Opens the WhatsApp chat straight away with the message already typed (no searching),
+     * then screen control taps Send — only when the user asked to send.
+     */
+    private fun whatsappTo(action: JSONObject, pa: Boolean, @Suppress("UNUSED_PARAMETER") confirmed: Boolean): ActionResult {
         val text = action.optString("text")
+        val send = action.optBoolean("send", true)
         val contactName = action.optString("contact")
         val found = target(action)
-        val who = found?.first ?: contactName
-        if (!confirmed) return ActionResult(confirm = p(pa, "$who ਨੂੰ WhatsApp:\n\"$text\"", "WhatsApp to $who:\n\"$text\""))
+        val intl = found?.let { intlNumber(it.second) }.orEmpty()
 
-        val number = found?.second?.filter { it.isDigit() || it == '+' } ?: ""
-        if (number.startsWith("+") && JarvisAccess.instance != null) {
-            // Open the chat with the text typed in, then the agent just taps Send.
-            view("https://api.whatsapp.com/send?phone=" + number.drop(1) + "&text=" + Uri.encode(text))
-            return ActionResult(task = "WhatsApp is open with a message already typed to $who. Tap the Send button once, then finish.")
+        if (intl.length < 8) {
+            // Contact/number not found → let screen control search inside WhatsApp.
+            val who = found?.first ?: contactName
+            if (JarvisAccess.instance == null) return ActionResult(noContact(action, pa))
+            openApp("WhatsApp", pa)
+            return ActionResult(
+                task = "WhatsApp is open. Tap the search icon, search \"$who\", open that chat, " +
+                    "type exactly: \"$text\"" + (if (send) " and tap Send." else ". Do NOT send.") + " Then finish."
+            )
         }
-        return ActionResult(
-            task = "Open WhatsApp, open the chat with \"$who\" (use the search icon if needed), " +
-                "type exactly this message: \"$text\" and tap Send. Then finish."
+
+        val link = "https://api.whatsapp.com/send?phone=$intl" +
+            (if (text.isNotEmpty()) "&text=" + Uri.encode(text) else "")
+        var opened = false
+        for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b", null)) {
+            try {
+                val i = Intent(Intent.ACTION_VIEW, Uri.parse(link))
+                if (pkg != null) i.setPackage(pkg)
+                start(i)
+                opened = true
+                break
+            } catch (e: ActivityNotFoundException) {}
+        }
+        if (!opened) return ActionResult(p(pa, "WhatsApp ਨਹੀਂ ਲੱਭਿਆ।", "WhatsApp isn't installed."))
+        if (!send || text.isEmpty()) return ActionResult()
+        if (JarvisAccess.instance == null) return ActionResult(
+            p(pa, "ਸੁਨੇਹਾ ਲਿਖ ਦਿੱਤਾ — Send ਦਬਾ ਦਿਓ। Screen Control ਚਾਲੂ ਕਰੋ ਤਾਂ ਮੈਂ ਆਪ ਭੇਜਾਂਗਾ।",
+                "Message typed — tap Send. Turn on Screen Control and I'll send it myself.")
         )
+        return ActionResult(pressSend = true)
+    }
+
+    /** Turns a saved number like "(559) 555-0123" or "098765 43210" into "15595550123" / "919876543210". */
+    private fun intlNumber(raw: String): String {
+        val plus = raw.trim().startsWith("+")
+        var d = raw.filter { it.isDigit() }
+        if (plus) return d
+        if (d.startsWith("00")) return d.drop(2)
+        val cc = countryCode()
+        if (d.startsWith("0")) d = d.trimStart('0')
+        return when {
+            cc == "1" && d.length == 11 && d.startsWith("1") -> d
+            d.length <= 10 -> cc + d
+            else -> d
+        }
+    }
+
+    private fun countryCode(): String {
+        val fromSim = try {
+            val tm = activity.getSystemService(TelephonyManager::class.java)
+            (tm?.simCountryIso?.takeIf { it.isNotBlank() } ?: tm?.networkCountryIso ?: "").lowercase(Locale.ROOT)
+        } catch (e: Exception) { "" }
+        val iso = fromSim.ifBlank { Locale.getDefault().country.lowercase(Locale.ROOT) }
+        return when (iso) {
+            "in" -> "91"; "gb" -> "44"; "au" -> "61"; "nz" -> "64"; "ae" -> "971"; "pk" -> "92"
+            "it" -> "39"; "de" -> "49"; "fr" -> "33"; "es" -> "34"
+            else -> "1" // US / Canada
+        }
+    }
+
+    /** Opens the right app first, so screen control starts in the right place. */
+    private fun screenTask(action: JSONObject): ActionResult {
+        val app = action.optString("app")
+        if (app.isNotBlank()) openApp(app, false)
+        return ActionResult(task = action.optString("goal"))
+    }
+
+    private fun playMusic(query: String, app: String): String? {
+        val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+            .putExtra(SearchManager.QUERY, query)
+            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+        val pkg = when (norm(app)) {
+            "spotify" -> "com.spotify.music"
+            "youtubemusic", "ytmusic" -> "com.google.android.apps.youtube.music"
+            "youtube" -> return youtube(query)
+            else -> null
+        }
+        if (pkg != null) i.setPackage(pkg)
+        try { start(i) } catch (e: ActivityNotFoundException) { return youtube(query) }
+        return null
+    }
+
+    private fun navigate(place: String): String? {
+        try {
+            start(Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=" + Uri.encode(place))))
+        } catch (e: ActivityNotFoundException) {
+            view("geo:0,0?q=" + Uri.encode(place))
+        }
+        return null
     }
 
     private fun whatsappShare(text: String): String? {
@@ -295,7 +384,7 @@ class Actions(private val activity: Activity) {
     private fun brightness(level: Int, pa: Boolean): String? {
         if (!Settings.System.canWrite(activity)) {
             start(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + activity.packageName)))
-            return p(pa, "ਪਹਿਲਾਂ Jarvis ਨੂੰ ਸੈਟਿੰਗ ਬਦਲਣ ਦੀ ਇਜਾਜ਼ਤ ਦਿਓ, ਫਿਰ ਦੁਬਾਰਾ ਕਹੋ।", "Allow Jarvis to modify settings, then ask again.")
+            return p(pa, "ਪਹਿਲਾਂ Singh AI ਨੂੰ ਸੈਟਿੰਗ ਬਦਲਣ ਦੀ ਇਜਾਜ਼ਤ ਦਿਓ, ਫਿਰ ਦੁਬਾਰਾ ਕਹੋ।", "Allow Singh AI to modify settings, then ask again.")
         }
         val cr = activity.contentResolver
         Settings.System.putInt(cr, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
@@ -325,7 +414,7 @@ class Actions(private val activity: Activity) {
     private fun notifications(pa: Boolean): ActionResult {
         if (!JarvisNotifications.isEnabled(activity)) {
             start(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            return ActionResult(p(pa, "ਪਹਿਲਾਂ Jarvis ਨੂੰ ਨੋਟੀਫਿਕੇਸ਼ਨ ਪੜ੍ਹਨ ਦੀ ਇਜਾਜ਼ਤ ਦਿਓ।", "Allow Jarvis to read notifications first."))
+            return ActionResult(p(pa, "ਪਹਿਲਾਂ Singh AI ਨੂੰ ਨੋਟੀਫਿਕੇਸ਼ਨ ਪੜ੍ਹਨ ਦੀ ਇਜਾਜ਼ਤ ਦਿਓ।", "Allow Singh AI to read notifications first."))
         }
         val data = JarvisNotifications.recentText()
         return if (data.isBlank()) ActionResult(p(pa, "ਕੋਈ ਨਵਾਂ ਨੋਟੀਫਿਕੇਸ਼ਨ ਨਹੀਂ।", "No new notifications, Sir."))

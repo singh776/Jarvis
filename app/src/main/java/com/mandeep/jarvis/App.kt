@@ -11,7 +11,7 @@ class App : Application() {
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             try {
                 File(filesDir, "crash.txt").writeText(
-                    "Jarvis ${BuildInfo.version(this)}  •  Android ${android.os.Build.VERSION.RELEASE}\n\n" +
+                    "Singh AI ${BuildInfo.version(this)}  •  Android ${android.os.Build.VERSION.RELEASE}\n\n" +
                         android.util.Log.getStackTraceString(e)
                 )
             } catch (x: Exception) {}
