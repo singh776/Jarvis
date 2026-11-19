@@ -97,13 +97,6 @@ class CarService : MediaBrowserService(), TextToSpeech.OnInitListener {
         result.sendResult(shortcuts.map { (title, q) -> item("s:$q", "▶ $title", "YouTube Music") }.toMutableList())
     }
 
-    override fun onSearch(query: String, extras: Bundle?, result: MediaBrowserService.Result<MutableList<MediaBrowser.MediaItem>>) {
-        result.sendResult(
-            if (query.isBlank()) mutableListOf()
-            else mutableListOf(item("q:$query", "▶ $query", "Singh AI"))
-        )
-    }
-
     private fun item(id: String, title: String, subtitle: String) = MediaBrowser.MediaItem(
         MediaDescription.Builder().setMediaId(id).setTitle(title).setSubtitle(subtitle).build(),
         MediaBrowser.MediaItem.FLAG_PLAYABLE
