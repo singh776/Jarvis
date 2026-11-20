@@ -90,6 +90,7 @@ class Actions(private val activity: Context) {
                     msg(playMusic(action.optString("query"), action.optString("app")))
                 }
                 "play_playlist" -> msg(playPlaylist(action.optBoolean("shuffle", false), pa))
+                "search_in_app" -> msg(searchIn(action.optString("app"), action.optString("query"), pa))
                 "type_here" -> if (JarvisAccess.instance == null)
                     ActionResult(p(pa, "ਇਸ ਲਈ ਸੈਟਿੰਗ ਵਿੱਚ Screen control ਚਾਲੂ ਕਰੋ।", "Turn on Screen control in Settings for this."))
                 else ActionResult(typeText = action.optString("text"), typeSend = action.optBoolean("send", true))
@@ -187,6 +188,23 @@ class Actions(private val activity: Context) {
                 else -> playMusic(query, "")
             }
             return p(pa, "ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing it.")
+        }
+
+        // ---- search inside an app: "YouTube te Sidhu de gaane labh", "search shoes on Amazon"
+        if (Offline.has(t, listOf("search", "labh", "lab", "khoj", "find", "dhoond", "ਲੱਭ", "ਲਭ", "ਖੋਜ", "ਸਰਚ", "खोज", "ढूंढ", "सर्च")) && online) {
+            val apps = listOf("youtube music", "youtube", "spotify", "play store", "maps", "google", "chrome", "amazon", "instagram",
+                "tiktok", "facebook", "whatsapp", "netflix", "snapchat", "ebay", "ਯੂਟਿਊਬ", "यूट्यूब", "ਇੰਸਟਾਗ੍ਰਾਮ", "ਫੇਸਬੁੱਕ", "ਵਟਸਐਪ")
+            val app = apps.firstOrNull { t.contains(" $it ") }
+            if (app != null) {
+                var q = t
+                for (w in listOf(app, "search", "kar", "karo", "de", "do", "te", "ਤੇ", "on", "in", "par", "pe", "ch", "vich", "ਵਿੱਚ",
+                    "labh", "lab", "khoj", "find", "dhoond", "ਲੱਭ", "ਲਭ", "ਖੋਜ", "ਸਰਚ", "ਕਰ", "ਦੇ", "खोज", "ढूंढ", "सर्च", "कर", "पर", "में",
+                    "for", "the", "please", "ji", "ਜੀ", "app", "ਐਪ", "nu", "ਨੂੰ"))
+                    q = q.replace(" $w ", " ")
+                q = q.trim().replace(Regex("\\s+"), " ")
+                val appName = ALIASES[app] ?: app
+                if (q.isNotEmpty()) return searchIn(appName, q, pa) ?: p(pa, "$appName ਤੇ ਲੱਭ ਰਿਹਾ ਹਾਂ।", "Searching $appName.")
+            }
         }
 
         // ---- torch
@@ -354,6 +372,43 @@ class Actions(private val activity: Context) {
         } catch (e: ActivityNotFoundException) {
             view("https://www.youtube.com/results?search_query=" + Uri.encode(query))
         }
+    }
+
+    /** Finds an installed app by its spoken name → package. */
+    private fun findPackage(name: String): String? {
+        val wanted = norm(ALIASES[name.lowercase(Locale.ROOT).trim()] ?: name)
+        if (wanted.isEmpty()) return null
+        val pm = activity.packageManager
+        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), PackageManager.MATCH_ALL)
+            .map { it.activityInfo.packageName to norm(it.loadLabel(pm).toString()) }
+        return (apps.firstOrNull { it.second == wanted } ?: apps.firstOrNull { it.second.startsWith(wanted) }
+            ?: apps.firstOrNull { it.second.contains(wanted) })?.first
+    }
+
+    /** "Search X on <app>": straight to the app's results page when the app supports it, otherwise screen control types it. */
+    private fun searchIn(app: String, query: String, pa: Boolean): String? {
+        val a = norm(app)
+        val q = query.trim()
+        if (q.isEmpty()) return openApp(app, pa)
+        fun tryStart(i: Intent): Boolean = try { start(i); true } catch (e: Exception) { false }
+        val done = when {
+            a == "youtube" || a == "yt" -> { youtubeSearch(q); true }
+            a.contains("youtubemusic") || a == "ytmusic" -> tryStart(Intent(Intent.ACTION_VIEW,
+                Uri.parse("https://music.youtube.com/search?q=" + Uri.encode(q))).setPackage("com.google.android.apps.youtube.music"))
+            a == "spotify" -> tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:" + Uri.encode(q))))
+            a.contains("playstore") || a == "play" -> tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=" + Uri.encode(q))))
+            a.contains("map") -> tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(q))))
+            a == "google" || a == "chrome" || a.isEmpty() -> { webSearch(q); true }
+            a == "amazon" -> tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.amazon.com/s?k=" + Uri.encode(q))))
+            a == "ebay" -> tryStart(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.ebay.com/sch/i.html?_nkw=" + Uri.encode(q))))
+            else -> false
+        }
+        if (done) return null
+        val pkg = findPackage(app) ?: return p(pa, "\"$app\" ਐਪ ਫ਼ੋਨ ਵਿੱਚ ਨਹੀਂ ਲੱਭੀ।", "I couldn't find \"$app\" on your phone.")
+        val acc = JarvisAccess.instance
+            ?: return p(pa, "ਐਪ ਦੇ ਅੰਦਰ ਲੱਭਣ ਲਈ ਸੈਟਿੰਗ ਵਿੱਚ Screen control ਚਾਲੂ ਕਰੋ।", "Turn on Screen control in Settings to search inside apps.")
+        acc.searchInApp(pkg, q, pa)
+        return null
     }
 
     private fun webSearch(query: String): String? {

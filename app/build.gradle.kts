@@ -11,8 +11,8 @@ android {
         applicationId = "com.mandeep.jarvis"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "5.2"
+        versionCode = 31
+        versionName = "5.3"
     }
 
     // Same key on every GitHub build, so new APKs install over the old one

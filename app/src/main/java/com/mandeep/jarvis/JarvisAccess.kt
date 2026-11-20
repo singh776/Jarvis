@@ -87,6 +87,66 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         return null
     }
 
+    /** Presses the keyboard's Enter/Search key on [node] (Android 11+), or taps a nearby search button. */
+    private fun submit(node: AccessibilityNodeInfo) {
+        var done = false
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            done = try { node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) } catch (e: Exception) { false }
+        }
+        if (!done) {
+            val root = rootInActiveWindow
+            findByDesc(root, listOf("search", "ਖੋਜੋ", "खोजें", "go", "submit"))?.let { click(it) }
+        }
+    }
+
+    private fun isSearchBox(n: AccessibilityNodeInfo): Boolean {
+        val s = ((n.viewIdResourceName ?: "") + " " + (n.hintText ?: "") + " " + (n.contentDescription ?: "") + " " + (n.text ?: "")).lowercase(Locale.ROOT)
+        return s.contains("search") || s.contains("ਖੋਜ") || s.contains("खोज") || s.contains("query")
+    }
+
+    private fun findSearchButton(n: AccessibilityNodeInfo?, depth: Int = 0): AccessibilityNodeInfo? {
+        if (n == null || depth > 40 || !n.isVisibleToUser) return null
+        val id = n.viewIdResourceName?.lowercase(Locale.ROOT).orEmpty()
+        val d = (n.contentDescription?.toString() ?: n.text?.toString() ?: "").lowercase(Locale.ROOT).trim()
+        if ((d == "search" || d.startsWith("search ") || d == "ਖੋਜੋ" || d == "खोजें" || id.endsWith("/search") ||
+                id.contains("search_button") || id.contains("menu_item_search") || id.contains("action_search")) && !n.isEditable) return n
+        for (i in 0 until n.childCount) findSearchButton(n.getChild(i), depth + 1)?.let { return it }
+        return null
+    }
+
+    /**
+     * Opens [pkg] (if needed), taps its search, types [query] and presses Search — works in most apps
+     * (Instagram, TikTok, WhatsApp, Amazon, Netflix, Settings…).
+     */
+    fun searchInApp(pkg: String, query: String, punjabi: Boolean) {
+        Thread {
+            waitForUserApp(2500)
+            val launch = packageManager.getLaunchIntentForPackage(pkg)
+            if (rootInActiveWindow?.packageName?.toString() != pkg && launch != null) {
+                startActivity(launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                val end = System.currentTimeMillis() + 5000
+                while (System.currentTimeMillis() < end && rootInActiveWindow?.packageName?.toString() != pkg) Thread.sleep(150)
+                Thread.sleep(700)
+            }
+            var box: AccessibilityNodeInfo? = null
+            for (attempt in 0..2) {
+                val root = rootInActiveWindow
+                box = findEditable(root)?.takeIf { isSearchBox(it) || attempt > 0 }
+                if (box != null) break
+                val btn = findSearchButton(root)
+                if (btn != null) { click(btn); Thread.sleep(800) } else Thread.sleep(500)
+            }
+            val b = box ?: findEditable(rootInActiveWindow)
+            if (b == null) {
+                main.post { speak(if (punjabi) "ਇਸ ਐਪ ਵਿੱਚ ਖੋਜ ਵਾਲਾ ਡੱਬਾ ਨਹੀਂ ਲੱਭਿਆ।" else "I couldn't find the search box in this app.") }
+                return@Thread
+            }
+            type(b, query)
+            Thread.sleep(300)
+            submit(b)
+        }.start()
+    }
+
     /**
      * Types [text] into the message box of the app that's open right now (WhatsApp chat, Messages, Instagram DM…)
      * and taps Send when [send]. Stays in that app — never goes back or opens anything else.
@@ -101,6 +161,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
                 return@Thread
             }
             type(box, text)
+            if (isSearchBox(box)) { Thread.sleep(250); submit(box); return@Thread }
             if (!send) {
                 main.post { speak(if (punjabi) "ਲਿਖ ਦਿੱਤਾ।" else "Typed it.") }
                 return@Thread
