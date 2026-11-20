@@ -95,6 +95,7 @@ class SettingsActivity : Activity() {
 
     // ===================================================================== layout
 
+    private var testing = false
     private var keepScroll = 0
     private var scrollView: ScrollView? = null
 
@@ -602,16 +603,31 @@ class SettingsActivity : Activity() {
                 }
                 val statusViews = HashMap<String, TextView>()
                 val rows = ArrayList<Row>()
+                val summary = Ui.text(this, "", 14f, p.muted).apply { setPadding(dp(16), dp(4), dp(16), dp(8)) }
                 rows.add(row("Test all models", Glyph.CHECK, Color.parseColor("#34C759"), chevron = true) {
-                    Thread {
-                        for (m in models) {
-                            runOnUiThread { statusViews[m]?.text = "…" }
-                            val (_, msg) = Gemini.probe(this, m)
-                            runOnUiThread { statusViews[m]?.text = msg }
-                            Thread.sleep(1200) // gentle, so the free limit isn't hit by the test itself
+                    if (testing) return@row
+                    testing = true
+                    for (m in models) statusViews[m]?.text = "waiting…"
+                    summary.text = "Testing ${models.size} models…"
+                    // 3 at a time, each with a time limit — nothing gets stuck
+                    val pool = java.util.concurrent.Executors.newFixedThreadPool(3)
+                    val results = java.util.concurrent.ConcurrentHashMap<String, Float>()
+                    val left = java.util.concurrent.atomic.AtomicInteger(models.size)
+                    for (m in models) pool.execute {
+                        runOnUiThread { statusViews[m]?.text = "testing…" }
+                        val (ok, msg, secs) = try { Gemini.probeTimed(this, m) } catch (e: Exception) { Triple(false, "❌ ${e.javaClass.simpleName}", 0f) }
+                        if (ok) results[m] = secs
+                        runOnUiThread { statusViews[m]?.text = msg }
+                        if (left.decrementAndGet() == 0) runOnUiThread {
+                            testing = false
+                            val best = results.minByOrNull { it.value }
+                            summary.text = if (best == null) "None answered right now — check the key / internet, or try again in a minute."
+                            else "✅ ${results.size} of ${models.size} work. Fastest: ${best.key} (${"%.1f".format(best.value)}s) — tap it below to use it."
                         }
-                    }.start()
+                    }
+                    pool.shutdown()
                 })
+                rows.add(Row(summary, false))
                 for (m in models) {
                     val r = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL

@@ -569,19 +569,38 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
     private fun agentLoop(goal: String, punjabi: Boolean): String {
         waitForUserApp(2500) // let Singh AI's popup close first, so we work in the user's app
         val steps = ArrayList<String>()
-        Thread.sleep(600) // let the screen settle after the app goes to the background
+        Thread.sleep(400) // let the screen settle after the app goes to the background
+        val started = System.currentTimeMillis()
+        var lastHash = 0
+        var sameCount = 0
+        var hint = ""
         for (step in 1..MAX_STEPS) {
+            if (System.currentTimeMillis() - started > 120_000)
+                return if (punjabi) "ਬਹੁਤ ਸਮਾਂ ਲੱਗ ਗਿਆ, ਮੈਂ ਰੁਕ ਗਿਆ। ਬਾਕੀ ਤੁਸੀਂ ਦੇਖ ਲਓ।" else "That took too long, Sir — I stopped. Please check the screen."
             if (stopRequested) return if (punjabi) "ਠੀਕ ਹੈ, ਰੋਕ ਦਿੱਤਾ।" else "Stopped, Sir."
             val doing = steps.lastOrNull()?.substringAfter(" — ", "")?.takeIf { it.isNotBlank() }
             showMini(doing ?: "Working…", "Singh AI · step $step · ✕ to stop", OrbView.Mode.THINKING)
 
             val nodes = ArrayList<AccessibilityNodeInfo>()
             val screen = snapshot(nodes)
+            // stuck on the same screen? tell the AI to try something else, and give up after a while
+            val h = screenHash()
+            if (h == lastHash && steps.isNotEmpty()) sameCount++ else sameCount = 0
+            lastHash = h
+            if (sameCount >= 5) return if (punjabi) "ਮੈਂ ਅਟਕ ਗਿਆ — ਸਕਰੀਨ ਬਦਲ ਨਹੀਂ ਰਹੀ। ਬਾਕੀ ਤੁਸੀਂ ਕਰ ਲਓ।"
+                else "I'm stuck — the screen isn't changing. Please finish this part, Sir."
+            hint = if (sameCount >= 2) "\n\nNOTE: your last actions did NOT change the screen. Try a different element, scroll, or another way." else ""
             val prompt = "GOAL: $goal\n\nSTEPS DONE SO FAR:\n" +
-                (if (steps.isEmpty()) "(none)" else steps.joinToString("\n")) +
-                "\n\nCURRENT SCREEN (step $step of max $MAX_STEPS):\n$screen"
+                (if (steps.isEmpty()) "(none)" else steps.takeLast(12).joinToString("\n")) +
+                "\n\nCURRENT SCREEN (step $step of max $MAX_STEPS):\n$screen$hint"
 
-            val out = Gemini.generate(this, agentSystem(punjabi), JSONArray().put(Gemini.part("user", prompt)), json = true)
+            // one retry if Google is busy, instead of giving up the whole task
+            val out = try {
+                Gemini.generate(this, agentSystem(punjabi), JSONArray().put(Gemini.part("user", prompt)), json = true)
+            } catch (e: GeminiException) {
+                Thread.sleep(800)
+                Gemini.generate(this, agentSystem(punjabi), JSONArray().put(Gemini.part("user", prompt)), json = true)
+            }
             val a = Gemini.parseJson(out) ?: continue
             val kind = a.optString("action")
             val id = a.optInt("id", -1)

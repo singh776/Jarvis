@@ -129,23 +129,13 @@ class Actions(private val activity: Context) {
     // ------------------------------------------------------------------ apps
 
     private fun openApp(name: String, pa: Boolean): String? {
-        val wanted = norm(name)
-        if (wanted.isEmpty()) return null
-        val pm = activity.packageManager
-        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps = pm.queryIntentActivities(launcher, PackageManager.MATCH_ALL)
-            .map { it.activityInfo.packageName to norm(it.loadLabel(pm).toString()) }
-
-        val best = apps.firstOrNull { it.second == wanted }
-            ?: apps.firstOrNull { it.second.startsWith(wanted) }
-            ?: apps.firstOrNull { it.second.contains(wanted) }
-            ?: apps.firstOrNull { it.second.isNotEmpty() && wanted.contains(it.second) }
-            ?: apps.firstOrNull { it.first.lowercase(Locale.ROOT).contains(wanted) }
-
-        val intent = best?.let { pm.getLaunchIntentForPackage(it.first) }
+        val n = ALIASES[name.lowercase(Locale.ROOT).trim()] ?: name
+        if (norm(n).isEmpty()) return null
+        val intent = findLaunch(n)
             ?: return p(pa, "\"$name\" ਐਪ ਫ਼ੋਨ ਵਿੱਚ ਨਹੀਂ ਲੱਭੀ।", "I couldn't find \"$name\" on your phone.")
-        start(intent)
-        return null
+        return try { start(intent); null } catch (e: Exception) {
+            p(pa, "\"$name\" ਖੁੱਲ੍ਹ ਨਹੀਂ ਸਕੀ।", "\"$name\" wouldn't open.")
+        }
     }
 
     private fun norm(s: String) = s.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
@@ -299,28 +289,82 @@ class Actions(private val activity: Context) {
     private fun openQuick(text: String, pa: Boolean): String? {
         var t = " " + text.lowercase(Locale.ROOT).replace(Regex("[.,!?।]"), " ") + " "
         val verbs = listOf(
-            "open", "launch", "start", "kholo", "khol de", "kholde", "khol", "chalao", "chala",
-            "ਖੋਲ੍ਹ ਦੇ", "ਖੋਲ੍ਹੋ", "ਖੋਲ੍ਹ", "ਖੋਲੋ", "ਖੋਲ", "ਚਲਾਓ", "ਚਲਾ", "खोल दो", "खोल दे", "खोलो", "खोल", "चलाओ"
+            "open kar do", "open kar de", "open karo", "open kar", "open", "launch", "start", "kholo", "khol do", "khol de", "kholde", "khol",
+            "chalu kar", "chalao", "chala", "te ja", "ch ja",
+            "ਖੋਲ੍ਹ ਦਿਓ", "ਖੋਲ੍ਹ ਦੇ", "ਖੋਲ੍ਹੋ", "ਖੋਲ੍ਹ", "ਖੋਲੋ", "ਖੋਲ", "ਓਪਨ ਕਰ", "ਓਪਨ", "ਚਲਾਓ", "ਚਲਾ", "ਚਾਲੂ ਕਰ",
+            "खोल दो", "खोल दे", "खोलो", "खोल", "ओपन कर", "ओपन", "चलाओ", "चालू कर"
         )
         val verb = verbs.firstOrNull { t.contains(" $it ") } ?: return null
         t = t.replace(" $verb ", " ")
-        for (f in listOf("app", "ਐਪ", "ऐप", "एप", "please", "ji", "ਜੀ", "जी", "the", "nu", "ਨੂੰ", "को", "de", "ਦੇ", "do", "my", "mera", "ਮੇਰਾ", "singh", "ai", "ਸਿੰਘ"))
+        for (f in listOf("app", "ਐਪ", "ऐप", "एप", "application", "please", "ji", "ਜੀ", "जी", "the", "nu", "ਨੂੰ", "को", "de", "ਦੇ",
+            "do", "my", "mera", "meri", "ਮੇਰਾ", "ਮੇਰੀ", "singh", "ai", "ਸਿੰਘ", "zara", "ਜ਼ਰਾ", "hun", "ਹੁਣ", "jaldi"))
             t = t.replace(" $f ", " ")
         var name = t.trim().replace(Regex("\\s+"), " ")
-        if (name.isEmpty() || name.split(" ").size > 3) return null
+        if (name.isEmpty() || name.split(" ").size > 4) return null
         name = ALIASES[name] ?: ALIASES[name.replace(" ", "")] ?: name
+        if (norm(name).length < 2) return null
+        val i = findLaunch(name) ?: return null
+        start(i)
+        return p(pa, "ਖੋਲ੍ਹ ਰਿਹਾ ਹਾਂ।", "Opening it.")
+    }
+
+    /** Edit distance, to understand slightly wrong names ("whatsap", "insta gram", "you tube"). */
+    private fun dist(a: String, b: String): Int {
+        val d = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            var prev = d[0]; d[0] = i
+            for (j in 1..b.length) {
+                val tmp = d[j]
+                d[j] = minOf(d[j] + 1, d[j - 1] + 1, prev + if (a[i - 1] == b[j - 1]) 0 else 1)
+                prev = tmp
+            }
+        }
+        return d[b.length]
+    }
+
+    /**
+     * The best way to open what the user named: an installed app (exact, starts-with, contains, close spelling),
+     * or the phone's own app for that job (camera, phone, messages, settings, gallery, contacts, calendar, clock,
+     * calculator, email, browser, music, maps, files).
+     */
+    private fun findLaunch(name: String): Intent? {
         val wanted = norm(name)
-        if (wanted.length < 2) return null
+        if (wanted.isEmpty()) return null
         val pm = activity.packageManager
         val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), PackageManager.MATCH_ALL)
             .map { it.activityInfo.packageName to norm(it.loadLabel(pm).toString()) }
         val best = apps.firstOrNull { it.second == wanted }
-            ?: apps.firstOrNull { it.second.startsWith(wanted) }
+            ?: apps.firstOrNull { it.second.startsWith(wanted) && wanted.length >= 3 }
             ?: apps.firstOrNull { wanted.length >= 4 && it.second.contains(wanted) }
-            ?: return null
-        val i = pm.getLaunchIntentForPackage(best.first) ?: return null
-        start(i)
-        return p(pa, "ਖੋਲ੍ਹ ਰਿਹਾ ਹਾਂ।", "Opening it.")
+            ?: apps.firstOrNull { it.second.length >= 4 && wanted.contains(it.second) }
+            ?: apps.filter { wanted.length >= 5 }.minByOrNull { dist(it.second, wanted) }?.takeIf { dist(it.second, wanted) <= 2 }
+            ?: apps.firstOrNull { wanted.length >= 4 && it.first.lowercase(Locale.ROOT).contains(wanted) }
+        best?.let { b -> pm.getLaunchIntentForPackage(b.first)?.let { return it } }
+        return systemApp(wanted)
+    }
+
+    private fun systemApp(w: String): Intent? {
+        fun cat(c: String) = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, c)
+        val i: Intent = when {
+            w.contains("camera") || w == "ਕੈਮਰਾ" -> Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+            w == "phone" || w.contains("dialer") || w.contains("dial") || w == "call" -> Intent(Intent.ACTION_DIAL)
+            w.contains("message") || w == "sms" || w.contains("text") -> cat(Intent.CATEGORY_APP_MESSAGING)
+            w.contains("setting") -> Intent(Settings.ACTION_SETTINGS)
+            w.contains("gallery") || w.contains("photo") || w.contains("picture") -> cat(Intent.CATEGORY_APP_GALLERY)
+            w.contains("contact") -> cat(Intent.CATEGORY_APP_CONTACTS)
+            w.contains("calendar") -> cat(Intent.CATEGORY_APP_CALENDAR)
+            w.contains("clock") || w.contains("alarm") -> Intent(AlarmClock.ACTION_SHOW_ALARMS)
+            w.contains("calculator") -> cat(Intent.CATEGORY_APP_CALCULATOR)
+            w.contains("email") || w.contains("mail") -> cat(Intent.CATEGORY_APP_EMAIL)
+            w.contains("browser") || w.contains("internet") -> cat(Intent.CATEGORY_APP_BROWSER)
+            w.contains("music") -> cat(Intent.CATEGORY_APP_MUSIC)
+            w.contains("map") || w.contains("navigation") -> cat(Intent.CATEGORY_APP_MAPS)
+            w.contains("file") -> cat(Intent.CATEGORY_APP_FILES)
+            w.contains("wifi") -> Intent(Settings.ACTION_WIFI_SETTINGS)
+            w.contains("bluetooth") -> Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+            else -> return null
+        }
+        return i.takeIf { it.resolveActivity(activity.packageManager) != null || it.selector != null }
     }
 
     companion object {
@@ -337,7 +381,15 @@ class Actions(private val activity: Context) {
             "ਸਨੈਪ" to "snapchat", "ਜੀਮੇਲ" to "gmail", "ਨੈੱਟਫਲਿਕਸ" to "netflix", "ਨੈਟਫਲਿਕਸ" to "netflix",
             "ਕੈਲਕੁਲੇਟਰ" to "calculator", "ਘੜੀ" to "clock", "ਫ਼ੋਨ" to "phone", "ਫੋਨ" to "phone",
             "ਮੈਸੇਜ" to "messages", "ਮੈਸੇਜਸ" to "messages", "ਟੈਲੀਗ੍ਰਾਮ" to "telegram", "ਟੈਲੀਗਰਾਮ" to "telegram",
-            "ਐਮਾਜ਼ਾਨ" to "amazon", "ਪਲੇ ਸਟੋਰ" to "play store", "ਪਲੇਸਟੋਰ" to "play store"
+            "ਐਮਾਜ਼ਾਨ" to "amazon", "ਪਲੇ ਸਟੋਰ" to "play store", "ਪਲੇਸਟੋਰ" to "play store",
+            "ਗੂਗਲ" to "google", "ਜੀਮੇਲ" to "gmail", "ਕੈਲੰਡਰ" to "calendar", "ਸੰਪਰਕ" to "contacts", "ਕਾਂਟੈਕਟ" to "contacts",
+            "ਫਾਈਲਾਂ" to "my files", "ਫਾਈਲ" to "my files", "ਨੋਟਸ" to "notes", "ਮੌਸਮ" to "weather", "ਯੂਟਿਊਬ ਮਿਊਜ਼ਿਕ" to "youtube music",
+            "ਗੂਗਲ ਮੈਪਸ" to "maps", "ਗੂਗਲ ਮੈਪ" to "maps", "ਰਿਕਾਰਡਰ" to "voice recorder", "ਫੋਟੋਆਂ" to "gallery", "ਫੋਟੋ" to "gallery",
+            "ਬ੍ਰਾਊਜ਼ਰ" to "chrome", "ਇੰਟਰਨੈੱਟ" to "internet", "ਗੇਮ" to "game", "ਸਨੈਪਚੈਟ" to "snapchat", "ਲਿੰਕਡਇਨ" to "linkedin",
+            "ਪੇਟੀਐਮ" to "paytm", "ਫੋਨਪੇ" to "phonepe", "ਗੂਗਲ ਪੇ" to "google pay", "ਟਵਿੱਟਰ" to "x", "ਥ੍ਰੈਡਸ" to "threads",
+            "you tube" to "youtube", "what's app" to "whatsapp", "whats app" to "whatsapp", "insta" to "instagram", "fb" to "facebook",
+            "yt music" to "youtube music", "gpay" to "google pay", "playstore" to "play store", "dialer" to "phone", "photos" to "gallery",
+            "यूट्यूब" to "youtube", "इंस्टा" to "instagram", "गूगल" to "google", "कैलकुलेटर" to "calculator", "कॉन्टैक्ट" to "contacts"
         )
     }
 

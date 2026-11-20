@@ -509,26 +509,64 @@ object Gemini {
     }
 
     /** Tries one tiny question on [model] and says if it works (blocking — run off the main thread). */
-    fun probe(ctx: Context, model: String): Pair<Boolean, String> {
+    fun probe(ctx: Context, model: String): Pair<Boolean, String> = probeTimed(ctx, model).let { it.first to it.second }
+
+    /**
+     * Quick, safe check of one model: a tiny question with short time limits (never hangs).
+     * Returns (works, message, seconds).
+     */
+    fun probeTimed(ctx: Context, model: String): Triple<Boolean, String, Float> {
         val key = apiKey(ctx)
-        if (key.isEmpty()) return false to "No API key"
+        if (key.isEmpty()) return Triple(false, "No API key", 0f)
         val t0 = System.currentTimeMillis()
-        return try {
-            call(key, model, "Reply with one word.", JSONArray().put(part("user", "Hi")), false)
-            coolDown.remove(model)
-            true to "✅ Works · ${"%.1f".format((System.currentTimeMillis() - t0) / 1000f)}s"
-        } catch (e: GeminiException) {
-            false to when {
-                e.noQuota -> "❌ No free use on your key"
-                e.code == 429 -> "⏳ Limit reached — try in a minute"
-                e.code == 503 || e.code == 500 -> "⏳ Google busy right now"
-                e.code == 404 -> "❌ Not available"
-                e.code == 401 || e.code == 403 -> "❌ Key not allowed"
-                else -> "❌ ${e.code}: " + e.message.orEmpty().removePrefix("Gemini error ${e.code}: ").take(60)
+        fun secs() = (System.currentTimeMillis() - t0) / 1000f
+        var body = JSONObject()
+            .put("contents", JSONArray().put(part("user", "Say OK")))
+            .put("generationConfig", JSONObject().put("maxOutputTokens", 32))
+        for (attempt in 0..1) {
+            val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models/" +
+                URLEncoder.encode(model, "UTF-8") + ":generateContent").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 6000
+                readTimeout = 20000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("x-goog-api-key", key)
+                setRequestProperty("Connection", "close")
             }
-        } catch (e: Exception) {
-            false to "❌ ${e.javaClass.simpleName}"
+            try {
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val code = try { conn.responseCode } catch (e: IOException) {
+                    if (e.message.orEmpty().contains("authentication challenge", true)) 401 else throw e
+                }
+                val raw = try { ((if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }).orEmpty() } catch (e: IOException) { "" }
+                if (code in 200..299) {
+                    coolDown.remove(model)
+                    return Triple(true, "✅ Works · ${"%.1f".format(secs())}s", secs())
+                }
+                val e = toError(code, raw)
+                // some models need their own thinking setting — try once without the token limit
+                if (code == 400 && attempt == 0 && !e.message.orEmpty().contains("API key", true)) {
+                    body = JSONObject().put("contents", JSONArray().put(part("user", "Say OK")))
+                    continue
+                }
+                return Triple(false, when {
+                    e.noQuota -> "❌ No free use on your key"
+                    code == 429 -> "⏳ Limit reached — try in a minute"
+                    code == 503 || code == 500 -> "⏳ Google busy right now"
+                    code == 404 -> "❌ Not available"
+                    code == 401 || code == 403 -> "❌ Key not allowed"
+                    else -> "❌ $code: " + e.message.orEmpty().removePrefix("Gemini error $code: ").take(60)
+                }, secs())
+            } catch (e: java.net.SocketTimeoutException) {
+                return Triple(false, "⏱ Too slow (no answer in 20s)", secs())
+            } catch (e: Exception) {
+                return Triple(false, "❌ ${e.javaClass.simpleName}", secs())
+            } finally {
+                conn.disconnect()
+            }
         }
+        return Triple(false, "❌ Didn't work", secs())
     }
 
     /** Text models this key can use (blocking). */
