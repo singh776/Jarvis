@@ -58,6 +58,9 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
     @Volatile private var aiSpeaking = false
     /** Mic stays closed until this time (so Gemini never hears its own voice from the speaker). */
     @Volatile private var quietUntil = 0L
+    private var oldMode = android.media.AudioManager.MODE_NORMAL
+    private var loudFrames = 0
+    private var lastFrame: ByteArray? = null
     private val userBuf = StringBuilder()
     private val aiBuf = StringBuilder()
 
@@ -66,6 +69,13 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
     fun start(systemPrompt: String, voice: String, punjabi: Boolean) {
         if (running) return
         running = true
+        // "phone call" audio mode on the loudspeaker: the phone's echo canceller then removes Gemini's own voice from the mic
+        try {
+            val am = ctx.getSystemService(android.media.AudioManager::class.java) ?: throw IllegalStateException()
+            oldMode = am.mode
+            am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+            if (!CarAudio.inCar(ctx)) speaker(am, true)
+        } catch (e: Exception) {}
         Thread {
             try {
                 val key = Gemini.apiKey(ctx)
@@ -82,6 +92,11 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
 
     fun stop() {
         running = false
+        try {
+            val am = ctx.getSystemService(android.media.AudioManager::class.java) ?: throw IllegalStateException()
+            speaker(am, false)
+            am.mode = oldMode
+        } catch (e: Exception) {}
         try { recorder?.stop() } catch (e: Exception) {}
         try { recorder?.release() } catch (e: Exception) {}
         recorder = null
@@ -103,6 +118,8 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
 
     companion object {
         const val DEFAULT_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+        /** How loud you must be (0..1) to interrupt Gemini while it talks — above its echo. */
+        const val BARGE_LEVEL = 0.32f
 
         /** A Live (native audio) model this key can use — remembered after the first time. */
         fun pickModel(c: Context, key: String): String {
@@ -190,8 +207,24 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
                 // half-duplex: while Gemini talks (and a moment after) the mic is NOT sent,
                 // otherwise it hears itself and answers its own words
                 val talking = aiSpeaking || playQueue.isNotEmpty() || System.currentTimeMillis() < quietUntil
-                if (!talking) main.post { listener.onLevel(level) }
-                if (muted || talking) continue
+                if (talking) {
+                    // only a clearly louder voice than the echo counts → you interrupt it
+                    if (level > BARGE_LEVEL) loudFrames++ else loudFrames = 0
+                    if (loudFrames >= 2 && !muted) {
+                        loudFrames = 0
+                        bargeIn()
+                        lastFrame?.let { prev ->
+                            try { send("{\"realtimeInput\":{\"audio\":{\"data\":\"${Base64.encodeToString(prev, Base64.NO_WRAP)}\",\"mimeType\":\"audio/pcm;rate=16000\"}}}") } catch (e: Exception) {}
+                        }
+                    } else {
+                        lastFrame = buf.copyOf(n)
+                        continue
+                    }
+                } else {
+                    loudFrames = 0
+                    main.post { listener.onLevel(level) }
+                }
+                if (muted) continue
                 val b64 = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
                 try {
                     send("{\"realtimeInput\":{\"audio\":{\"data\":\"$b64\",\"mimeType\":\"audio/pcm;rate=16000\"}}}")
@@ -206,7 +239,9 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
         val rate = 24000
         val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = AudioTrack.Builder()
-            .setAudioAttributes(CarAudio.voiceAttributes(ctx))
+            .setAudioAttributes(android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setTransferMode(AudioTrack.MODE_STREAM)
@@ -220,16 +255,33 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
                 if (pcm == null) {
                     if (aiSpeaking && playQueue.isEmpty()) {
                         aiSpeaking = false
-                        quietUntil = System.currentTimeMillis() + 900 // the speaker still rings out for a moment
+                        quietUntil = System.currentTimeMillis() + 400 // the speaker still rings out for a moment
                         main.post { listener.onSpeaking(false) }
                     }
                     continue
                 }
                 if (!aiSpeaking) { aiSpeaking = true; main.post { listener.onSpeaking(true) } }
                 try { t.write(pcm, 0, pcm.size) } catch (e: Exception) {}
-                quietUntil = System.currentTimeMillis() + pcm.size / 48 + 900 // audio length (24 kHz, 16-bit) + echo tail
+                quietUntil = System.currentTimeMillis() + pcm.size / 48 + 400 // audio length (24 kHz, 16-bit) + echo tail
             }
         }.start()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun speaker(am: android.media.AudioManager, on: Boolean) {
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            if (on) am.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                ?.let { am.setCommunicationDevice(it) }
+            else am.clearCommunicationDevice()
+        } else am.isSpeakerphoneOn = on
+    }
+
+    /** You spoke over Gemini → stop its voice now and listen to you. */
+    private fun bargeIn() {
+        playQueue.clear()
+        try { track?.pause(); track?.flush(); track?.play() } catch (e: Exception) {}
+        quietUntil = 0
+        if (aiSpeaking) { aiSpeaking = false; main.post { listener.onSpeaking(false) } }
     }
 
     // ------------------------------------------------------------------ messages from Gemini
