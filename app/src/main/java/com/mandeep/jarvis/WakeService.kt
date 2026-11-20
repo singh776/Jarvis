@@ -387,6 +387,10 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             speak(quick, again = false, hideAfter = true)
             return
         }
+        if (!Offline.online(this)) {
+            speak(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", again = false, hideAfter = true)
+            return
+        }
         val acc = JarvisAccess.instance
         acc?.showMini(text, "Thinking…", OrbView.Mode.THINKING)
         Thread {

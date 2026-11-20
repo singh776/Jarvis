@@ -12,8 +12,8 @@ object YouTubeFinder {
         if (query.isBlank()) return null
         val url = URL("https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8"))
         val conn = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 8000
-            readTimeout = 10000
+            connectTimeout = 5000
+            readTimeout = 7000
             setRequestProperty(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
@@ -23,8 +23,21 @@ object YouTubeFinder {
         }
         return try {
             if (conn.responseCode !in 200..299) return null
-            val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            VIDEO_ID.find(html)?.groupValues?.get(1)
+            // read only until the first video shows up (much faster than loading the whole page)
+            conn.inputStream.bufferedReader(Charsets.UTF_8).use { r ->
+                val buf = CharArray(16 * 1024)
+                val sb = StringBuilder()
+                var searched = 0
+                while (sb.length < 1_500_000) {
+                    val n = r.read(buf)
+                    if (n < 0) break
+                    sb.append(buf, 0, n)
+                    val from = (searched - 40).coerceAtLeast(0)
+                    VIDEO_ID.find(sb, from)?.let { return it.groupValues[1] }
+                    searched = sb.length
+                }
+                null
+            }
         } finally {
             conn.disconnect()
         }

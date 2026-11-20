@@ -142,7 +142,95 @@ class Actions(private val activity: Context) {
      * Instant path for "open X" / "X ਖੋਲ੍ਹ" — opens the app right away without asking the AI.
      * Returns what to say, or null when the sentence isn't a plain "open app" request.
      */
+    /**
+     * Instant commands — done right away on the phone, no AI and no internet needed:
+     * songs, playlist, torch, volume, pause/next, calls and opening apps.
+     * Returns what to say, or null when the AI should handle it.
+     */
     fun quickOpen(text: String, pa: Boolean): String? {
+        val t = Offline.clean(text)
+        val words = t.trim().split(" ").size
+        val online = Offline.online(activity)
+
+        // ---- songs
+        if (Offline.has(t, Offline.PLAYLIST) && (Offline.has(t, Offline.PLAY_VERBS) || words <= 3)) {
+            if (online) return playPlaylist(t.contains("shuffle") || t.contains("mix"), pa) ?: p(pa, "ਤੁਹਾਡੀ ਪਲੇਲਿਸਟ ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing your playlist.")
+            return playOffline("", pa)
+        }
+        if (Offline.isSongRequest(t)) {
+            val q = Offline.songQuery(t)
+            if (!online) return playOffline(q, pa)
+            val query = q.ifEmpty { "latest punjabi songs" }
+            Playlist.add(activity, query)
+            when {
+                t.contains("spotify") -> playMusic(query, "spotify")
+                t.contains("youtube music") || t.contains("yt music") || t.contains("ytmusic") -> playMusic(query, "youtube music")
+                t.contains(" youtube ") || t.contains("ਯੂਟਿਊਬ") || t.contains("यूट्यूब") ->
+                    if (CarAudio.inCar(activity)) playMusic(query, "youtube music") else youtube(query)
+                else -> playMusic(query, "")
+            }
+            return p(pa, "ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing it.")
+        }
+
+        // ---- torch
+        if (Offline.has(t, Offline.TORCH)) {
+            val on = !Offline.has(t, Offline.OFF)
+            return torch(on, pa) ?: p(pa, if (on) "ਟਾਰਚ ਚਾਲੂ।" else "ਟਾਰਚ ਬੰਦ।", if (on) "Torch on." else "Torch off.")
+        }
+
+        // ---- volume
+        if (Offline.has(t, Offline.VOLUME)) {
+            val change = when {
+                Offline.has(t, Offline.MUTE) || Offline.has(t, Offline.OFF) -> "mute"
+                Offline.has(t, Offline.DOWN) -> "down"
+                Offline.has(t, Offline.UP) -> "up"
+                else -> null
+            }
+            if (change != null) {
+                val a = JSONObject().put("change", change)
+                volume(a)
+                if (change != "mute") volume(a) // two steps feels right
+                return p(pa, "ਠੀਕ ਹੈ।", "Done.")
+            }
+        }
+
+        // ---- music control
+        if (words <= 4 || Offline.has(t, Offline.SONG)) {
+            val cmd = when {
+                Offline.has(t, Offline.NEXT) -> "next"
+                Offline.has(t, Offline.PREV) -> "previous"
+                Offline.has(t, Offline.PAUSE) -> "pause"
+                else -> null
+            }
+            if (cmd != null) { media(cmd); return p(pa, "ਠੀਕ ਹੈ।", "Okay.") }
+        }
+
+        // ---- calls ("Papa nu call kar")
+        Offline.callName(t)?.let { who ->
+            val a = JSONObject().put("contact", who)
+            if (target(a) != null) { call(a, pa); return p(pa, "$who ਨੂੰ ਕਾਲ ਕਰ ਰਿਹਾ ਹਾਂ।", "Calling $who.") }
+            if (!online) return noContact(a, pa)
+        }
+
+        return openQuick(text, pa)
+    }
+
+    /** No internet: play a song saved on the phone. */
+    private fun playOffline(q: String, pa: Boolean): String {
+        if (!Offline.canReadSongs(activity))
+            return p(pa, "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾਉਣ ਲਈ Singh AI ਨੂੰ ਗਾਣਿਆਂ (Music) ਦੀ ਇਜਾਜ਼ਤ ਦਿਓ।",
+                "No internet. To play songs saved on the phone, allow Singh AI to access music.")
+        val song = Offline.findLocalSong(activity, q)
+        if (song == null) {
+            val any = if (q.isNotEmpty()) null else Offline.findLocalSong(activity, "")
+            if (any != null && Offline.playLocal(activity, any.first)) return p(pa, "ਫ਼ੋਨ ਵਿੱਚੋਂ ਗਾਣਾ ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing a song from your phone.")
+            return p(pa, "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ, ਤੇ ਇਹ ਗਾਣਾ ਫ਼ੋਨ ਵਿੱਚ ਨਹੀਂ ਮਿਲਿਆ।", "No internet, and that song isn't saved on the phone.")
+        }
+        Offline.playLocal(activity, song.first)
+        return p(pa, "ਫ਼ੋਨ ਵਿੱਚੋਂ ${song.second} ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing ${song.second} from your phone.")
+    }
+
+    private fun openQuick(text: String, pa: Boolean): String? {
         var t = " " + text.lowercase(Locale.ROOT).replace(Regex("[.,!?।]"), " ") + " "
         val verbs = listOf(
             "open", "launch", "start", "kholo", "khol de", "kholde", "khol", "chalao", "chala",

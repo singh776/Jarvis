@@ -189,6 +189,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onResume() {
         super.onResume()
         if (showingCrash) return
+        Gemini.warmUp(this)
         if (uiSignature != Ui.signature(this)) buildUi()
         updateLangButton()
         if (!busy && !listening && mode == OrbView.Mode.IDLE) setStatus(idleText())
@@ -200,6 +201,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         WakeService.setAppVisible(true)
         WakeService.start(this)
         askNotificationsOnce()
+        askSongsOnce()
         autoListenSoon()
     }
 
@@ -217,6 +219,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (::chat.isInitialized) { chat.removeAllViews(); updateHero() }
         attachment = null
         refreshAttachChip()
+    }
+
+    /** Lets Singh AI play songs saved on the phone (works without internet). Asked once. */
+    private fun askSongsOnce() {
+        if (prefs.getBoolean("asked_songs", false)) return
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        prefs.edit().putBoolean("asked_songs", true).apply()
+        if (!Offline.canReadSongs(this)) requestPermissions(arrayOf(Offline.audioPermission()), 32)
     }
 
     private fun askNotificationsOnce() {
@@ -304,7 +314,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         overlayPads.clear()
 
         // Gemini Live-style glow rising from the bottom while listening / speaking
-        glow = GlowView(this).apply { dark = p.dark }
+        glow = GlowView(this).apply { fadeColor = p.bg; dark = p.dark }
         root.addView(glow, FrameLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.45f).toInt(), Gravity.BOTTOM))
 
         val col = LinearLayout(this).apply {
@@ -748,7 +758,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     /** Saves the conversation on screen into the chat list. */
     private fun saveChat() {
         if (messages.isEmpty()) return
-        try { ChatStore.save(this, chatId, messages.map { it.user to it.text }, brain.exportHistory()) } catch (e: Exception) {}
+        val id = chatId
+        val msgs = messages.map { it.user to it.text }
+        val hist = brain.exportHistory()
+        val app = applicationContext
+        Thread { try { synchronized(ChatStore) { ChatStore.save(app, id, msgs, hist) } } catch (e: Exception) {} }.start()
     }
 
     /** Opens an old conversation so you can read it and keep talking in it. */
@@ -1018,6 +1032,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
             .putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf(other))
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !Offline.online(this))
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             // stop listening sooner after you finish talking → faster answers
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
@@ -1152,6 +1167,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             if (quick != null) {
                 busy = false
                 say(quick, listenAfter = false)
+                return
+            }
+            if (!Offline.online(this)) {
+                busy = false
+                say(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", listenAfter = false)
                 return
             }
         }
@@ -1641,7 +1661,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setBackgroundColor(p.bg)
             isClickable = true // nothing behind it gets touched
         }
-        val g = GlowView(this).apply { dark = p.dark; mode = this@MainActivity.mode }
+        val g = GlowView(this).apply { fadeColor = p.bg; dark = p.dark; mode = this@MainActivity.mode }
         layer.addView(g, FrameLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.55f).toInt(), Gravity.BOTTOM))
         liveGlow = g
 

@@ -323,6 +323,10 @@ class GlowView(context: Context) : View(context) {
         xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
     }
     private var maskH = -1f
+    private val fadePaint = Paint()
+    private var fadeFor = 0
+    /** The screen's background color (fades the glow into it). Leave null when drawn over other apps. */
+    var fadeColor: Int? = null
 
     init { paint.isDither = true }
 
@@ -330,8 +334,10 @@ class GlowView(context: Context) : View(context) {
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
-        // draw the colors on their own layer, then fade the top out smoothly (no hard line at the top)
-        val save = canvas.saveLayer(0f, 0f, w, h, null)
+        // fadeColor set → paint the background color over the top (cheap & smooth);
+        // otherwise (over other apps) use a layer + mask
+        val fc = fadeColor
+        val save = if (fc == null) canvas.saveLayer(0f, 0f, w, h, null) else -1
         val speed = when (mode) { OrbView.Mode.THINKING -> 1.4f; OrbView.Mode.IDLE -> 0.25f; else -> 0.7f }
         for (i in shaders.indices) {
             val ph = i * 1.7f + t * speed * (if (i % 2 == 0) 1f else -0.8f)
@@ -345,6 +351,20 @@ class GlowView(context: Context) : View(context) {
             canvas.drawRect(0f, 0f, w, h, paint)
         }
         paint.shader = null
+        if (fc != null) {
+            if (maskH != h || fadeFor != fc) {
+                fadePaint.shader = android.graphics.LinearGradient(
+                    0f, 0f, 0f, h,
+                    intArrayOf(fc, Color.argb(Color.alpha(fc) * 2 / 3, Color.red(fc), Color.green(fc), Color.blue(fc)),
+                        Color.argb(Color.alpha(fc) / 6, Color.red(fc), Color.green(fc), Color.blue(fc)), Color.TRANSPARENT),
+                    floatArrayOf(0f, 0.35f, 0.7f, 1f), Shader.TileMode.CLAMP
+                )
+                fadePaint.isDither = true
+                maskH = h; fadeFor = fc
+            }
+            canvas.drawRect(0f, 0f, w, h, fadePaint)
+            return
+        }
         if (maskH != h) {
             maskPaint.shader = android.graphics.LinearGradient(
                 0f, 0f, 0f, h,

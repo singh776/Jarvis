@@ -69,6 +69,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         p = Ui.palette(this)
         buildUi()
         tts = TextToSpeech(this, this)
+        Gemini.warmUp(this)
         main.postDelayed({ listen() }, 250)
     }
 
@@ -184,6 +185,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang)
             .putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf(other))
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, !Offline.online(this))
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
@@ -239,6 +241,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         val pa = punjabi
         val quick = try { Actions(this).quickOpen(text, pa) } catch (e: Exception) { null }
         if (quick != null) { busy = false; speak(quick, again = false); return }
+        if (!Offline.online(this)) { busy = false; speak(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", again = false); return }
         Thread {
             var failed = false
             val reply = try {

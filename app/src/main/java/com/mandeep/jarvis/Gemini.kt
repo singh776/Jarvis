@@ -109,6 +109,8 @@ object Gemini {
 
         val contents = sanitize(contents)
         if (contents.length() == 0) throw GeminiException(400, "Gemini error 400: empty request")
+        loadLevels(ctx)
+        val levelsBefore = thinkLevel.toMap()
         val main = modelOverride ?: model(ctx)
         // Try the chosen model first, then the backup, then Flash-Lite (works on almost every free key).
         val all = LinkedHashSet<String>().apply {
@@ -129,6 +131,7 @@ object Gemini {
                 try {
                     val out = call(key, m, system, contents, json)
                     coolDown.remove(m)
+                    if (thinkLevel != levelsBefore) saveLevels(ctx)
                     return out
                 } catch (e: GeminiException) {
                     last = e
@@ -194,6 +197,42 @@ object Gemini {
      */
     private val THINK_LEVELS = listOf("minimal", "low", "")
     private val thinkLevel = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    @Volatile private var levelsLoaded = false
+    @Volatile private var lastWarm = 0L
+
+    /** Remembers which thinking setting each model accepts, so even the first question after opening is fast. */
+    private fun loadLevels(ctx: Context) {
+        if (levelsLoaded) return
+        levelsLoaded = true
+        try {
+            val o = JSONObject(prefs(ctx).getString("think_levels", "{}") ?: "{}")
+            for (k in o.keys()) thinkLevel[k] = o.optInt(k)
+        } catch (e: Exception) {}
+    }
+
+    private fun saveLevels(ctx: Context) {
+        try {
+            val o = JSONObject()
+            for ((k, v) in thinkLevel) o.put(k, v)
+            prefs(ctx).edit().putString("think_levels", o.toString()).apply()
+        } catch (e: Exception) {}
+    }
+
+    /** Opens the connection to Google early (in the background) so the first answer comes quicker. */
+    fun warmUp(ctx: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastWarm < 60_000 || !Offline.online(ctx)) return
+        lastWarm = now
+        loadLevels(ctx)
+        Thread {
+            try {
+                val c = (URL("https://generativelanguage.googleapis.com/").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 5000; readTimeout = 5000
+                }
+                c.responseCode; (c.errorStream ?: c.inputStream)?.use { it.readBytes() }
+            } catch (e: Exception) {}
+        }.start()
+    }
 
     private fun call(key: String, model: String, system: String, contents: JSONArray, json: Boolean): String {
         var i = if (model.contains("flash")) thinkLevel[model] ?: 0 else THINK_LEVELS.size - 1
@@ -261,7 +300,7 @@ object Gemini {
             if (sb.isBlank()) throw GeminiException(503, "Gemini error 503: empty answer")
             return sb.toString()
         } finally {
-            conn.disconnect()
+            // no disconnect(): the connection is kept open and reused → next answer starts faster
         }
     }
 
