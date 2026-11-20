@@ -70,6 +70,59 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         return label + (if (foregroundTitle.isNotBlank() && foregroundTitle != label) " — $foregroundTitle" else "")
     }
 
+    /**
+     * All the words on the user's screen (the app under Singh AI's popup), top to bottom.
+     * Used for "translate this", "read this to me", "what does this mean", "write a reply to this".
+     */
+    fun screenText(max: Int = 4000): String {
+        val sb = StringBuilder()
+        val seen = HashSet<String>()
+        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 60 || sb.length > max) return
+            if (n.isVisibleToUser) {
+                val t = (n.text?.toString() ?: n.contentDescription?.toString() ?: "").trim()
+                if (t.isNotEmpty() && t.length < 1500 && seen.add(t)) sb.append(t).append('\n')
+            }
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
+        }
+        try {
+            val roots = windows.filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+                .mapNotNull { it.root }.filter { it.packageName?.toString() != packageName }
+            if (roots.isNotEmpty()) roots.forEach { walk(it, 0) }
+            else rootInActiveWindow?.takeIf { it.packageName?.toString() != packageName }?.let { walk(it, 0) }
+        } catch (e: Exception) {}
+        return sb.toString().take(max)
+    }
+
+    /** Takes a picture of the screen right now (Android 11+). [done] gets JPEG bytes or null. */
+    fun screenshot(done: (ByteArray?) -> Unit) {
+        if (Build.VERSION.SDK_INT < 30) { done(null); return }
+        try {
+            takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    var bytes: ByteArray? = null
+                    try {
+                        val hb = result.hardwareBuffer
+                        val hw = android.graphics.Bitmap.wrapHardwareBuffer(hb, result.colorSpace)
+                        val bmp = hw?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                        hb.close()
+                        if (bmp != null) {
+                            // smaller picture = faster answer
+                            val scale = 1080f / maxOf(bmp.width, bmp.height).coerceAtLeast(1080)
+                            val small = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(bmp,
+                                (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
+                            val out = java.io.ByteArrayOutputStream()
+                            small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                            bytes = out.toByteArray()
+                        }
+                    } catch (e: Exception) {}
+                    done(bytes)
+                }
+                override fun onFailure(errorCode: Int) { done(null) }
+            })
+        } catch (e: Exception) { done(null) }
+    }
+
     /** Waits (up to [maxMs]) until Singh AI's own popup is gone and the user's app is on top again. */
     private fun waitForUserApp(maxMs: Long) {
         val end = System.currentTimeMillis() + maxMs

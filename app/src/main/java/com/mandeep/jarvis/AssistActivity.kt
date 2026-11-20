@@ -41,6 +41,10 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var answer: TextView
     private lateinit var mic: MicButton
 
+    /** What was on the screen when the popup opened (words + a picture), for "translate this / what is this". */
+    private var screenWords = ""
+    private var screenPic: ByteArray? = null
+
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -67,6 +71,11 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             startActivity(Intent(this, MainActivity::class.java).setAction(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             finish()
             return
+        }
+        // grab the screen BEFORE our popup covers it
+        JarvisAccess.instance?.let { acc ->
+            screenWords = try { acc.screenText() } catch (e: Exception) { "" }
+            acc.screenshot { b -> screenPic = b }
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
         window.setDimAmount(0f)
@@ -137,6 +146,14 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             maxLines = 8
             setLineSpacing(0f, 1.08f)
             visibility = View.GONE
+        }
+        answer.setOnClickListener {
+            val t = answer.text?.toString().orEmpty()
+            if (t.isNotBlank()) {
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("Singh AI", t))
+                android.widget.Toast.makeText(this, if (punjabi) "ਕਾਪੀ ਹੋ ਗਿਆ ✓" else "Copied ✓", android.widget.Toast.LENGTH_SHORT).show()
+            }
         }
         card.addView(answer, LinearLayout.LayoutParams(-1, -2))
 
@@ -251,6 +268,10 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         val quick = try { Actions(this).quickOpen(text, pa) } catch (e: Exception) { null }
         if (quick != null) { busy = false; speak(quick, again = false); return }
         if (!Offline.online(this)) { busy = false; Knowledge.offlineAnswer(this, text, pa)?.let { speak(it, again = false); return }; speak(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", again = false); return }
+        if (aboutScreen(text) && (screenPic != null || screenWords.isNotBlank())) {
+            askAboutScreen(text, pa)
+            return
+        }
         Thread {
             var failed = false
             val reply = try {
@@ -264,6 +285,46 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             main.post { busy = false; act(text, reply, pa, failed) }
         }.start()
     }
+
+    /** Is the question about what's on the screen? ("this", "ਇਹ", translate, read, meaning, reply to this…) */
+    private fun aboutScreen(q: String): Boolean {
+        val t = " " + q.lowercase() + " "
+        val words = listOf(
+            " this ", " these ", " screen ", " here ", "translate", " read ", "meaning", " mean", "what is it", "what's this",
+            "reply", "answer this", "write a message", "write message",
+            " ਇਹ ", "ਇਹਦਾ", "ਇਹਨੂੰ", "ਇਸ ", "ਇਸਦਾ", "ਆਹ ", "ਏਹ ", "ਸਕਰੀਨ", "ਟ੍ਰਾਂਸਲੇਟ", "ਅਨੁਵਾਦ", "ਪੜ੍ਹ", "ਮਤਲਬ", "ਕੀ ਚੀਜ਼", "ਜਵਾਬ ਲਿਖ", "ਮੈਸੇਜ ਲਿਖ",
+            " eh ", " eh ", "ehda", "ehnu", " aah ", " ah ki", "ki cheez", "matlab", "parh", "padh", "translate kar", "likh ke de",
+            " यह ", " ये ", "इसका", "इसे", "स्क्रीन", "अनुवाद", "पढ़", "मतलब", "क्या चीज़"
+        )
+        return words.any { t.contains(it) }
+    }
+
+    /** Answers about what's on the screen: reads, translates, explains, searches it, or writes a reply for it. */
+    private fun askAboutScreen(question: String, pa: Boolean) {
+        busy = true
+        setMode(OrbView.Mode.THINKING)
+        said.text = question
+        val words = screenWords
+        val pic = screenPic
+        Thread {
+            val answer = try {
+                val att = Attachment(pic ?: ByteArray(0), if (pic != null) "image/jpeg" else "text/plain", null, "phone screen")
+                val q = question + (if (words.isNotBlank()) "\n\nText on the screen:\n$words" else "") +
+                    "\n\n(The user is asking about what's on their phone screen. Read / translate / explain / search it as they ask. " +
+                    "If they ask you to write a message or reply, write it ready to send — only the message itself.)"
+                if (pic != null) brain.askAbout(q, att, pa, punjabiVoice)
+                else Gemini.withSearch { brain.askText(q, pa, punjabiVoice) }
+            } catch (e: Exception) { Gemini.friendlyError(e, pa) }
+            main.post {
+                busy = false
+                speak(answer, again = true)
+                lastAnswer = answer
+            }
+        }.start()
+    }
+
+    /** Last answer, so it can be copied (tap the answer). */
+    private var lastAnswer = ""
 
     private fun act(userText: String, reply: Reply, pa: Boolean, failed: Boolean) {
         if (closing) return

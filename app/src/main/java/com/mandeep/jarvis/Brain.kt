@@ -117,6 +117,15 @@ class Brain(private val context: Context) {
     }
 
     /** Answers a question about a photo, screenshot or file the user showed (read, explain, translate…). */
+    /** A plain spoken answer (no phone actions) — used for questions about the words on the screen. */
+    fun askText(question: String, punjabiMode: Boolean, punjabiVoice: Boolean): String {
+        val system = "You are Singh AI, the user's phone assistant. Your reply is spoken aloud: plain sentences, no markdown, no lists. " +
+            "When translating or reading, give the full text. When writing a message for the user, write only the message. " +
+            langRule(punjabiMode, punjabiVoice)
+        return Gemini.generate(context, system, JSONArray().put(Gemini.part("user", question)), json = false, modelOverride = Gemini.fastModel(context))
+            .replace(Regex("\\[\\d+(,\\s*\\d+)*\\]"), "").replace("**", "").trim()
+    }
+
     fun askAbout(question: String, file: Attachment, punjabiMode: Boolean, punjabiVoice: Boolean): String {
         if (apiKey.isEmpty()) throw IllegalStateException("No Gemini API key")
         val q = question.ifBlank {
