@@ -59,6 +59,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var liveWave: WaveBar
     private lateinit var liveBtn: LiveButton
     private lateinit var suggestions: LinearLayout
+    /** Websites the last Google-searched answer came from (shown under the answer). */
+    private lateinit var heroSources: LinearLayout
     private lateinit var rootFrame: FrameLayout
 
     // ---- Live screen (full screen voice chat, like Gemini Live)
@@ -95,15 +97,40 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var spokenEarly: String? = null
     private var earlyDone = false
 
-    /** Starts speaking as soon as the answer's words are complete — no waiting for the rest. */
-    private fun speakEarly(text: String) {
-        val engine = tts ?: return
-        if (!ttsReady || text.isBlank() || spokenEarly != null) return
-        spokenEarly = text
-        earlyDone = false
+    private fun voiceSpeaking() = tts?.isSpeaking == true || HdVoice.speaking
+
+    private fun stopVoice() {
+        tts?.stop()
+        HdVoice.stop()
+    }
+
+    /** Speaks with the HD (Gemini) voice when it's on; falls back to the phone voice by itself. */
+    private fun speakOut(text: String, id: String) {
+        if (HdVoice.usable(this)) {
+            HdVoice.speak(this, text,
+                onStart = { setMode(OrbView.Mode.SPEAKING) },
+                onDone = { afterSpeaking() },
+                onFail = { phoneSpeak(text, id) })
+            return
+        }
+        phoneSpeak(text, id)
+    }
+
+    private fun phoneSpeak(text: String, id: String) {
+        val engine = tts
+        if (!ttsReady || engine == null) { afterSpeaking(); return }
         VoiceSettings.apply(this, engine, text, punjabiVoice)
         engine.setAudioAttributes(CarAudio.voiceAttributes(this))
-        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "early-" + System.currentTimeMillis())
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, id + "-" + System.currentTimeMillis())
+    }
+
+    /** Starts speaking as soon as the answer's words are complete — no waiting for the rest. */
+    private fun speakEarly(text: String) {
+        if (tts == null || text.isBlank() || spokenEarly != null) return
+        if (!ttsReady && !HdVoice.usable(this)) return
+        spokenEarly = text
+        earlyDone = false
+        speakOut(text, "early")
     }
 
     private var liveChat: LinearLayout? = null
@@ -256,7 +283,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", true)
 
     private val autoListenTask = Runnable {
-        if (!busy && !listening && mode == OrbView.Mode.IDLE && tts?.isSpeaking != true && hasWindowFocus()) {
+        if (!busy && !listening && mode == OrbView.Mode.IDLE && !voiceSpeaking() && hasWindowFocus()) {
             startListening()
         }
     }
@@ -396,6 +423,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         hero.addView(greeting, LinearLayout.LayoutParams(-1, -2))
+        heroSources = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), 0)
+            visibility = View.GONE
+        }
+        hero.addView(ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(heroSources)
+        }, LinearLayout.LayoutParams(-1, -2))
         hero.addView(View(this), LinearLayout.LayoutParams(-1, 0, 1f))
         suggestions = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -508,7 +544,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         liveWave = WaveBar(this).apply {
             visibility = View.GONE
             isClickable = true
-            setOnClickListener { if (listening) stopListening() else tts?.stop() }
+            setOnClickListener { if (listening) stopListening() else stopVoice() }
         }
         pill.addView(liveWave, LinearLayout.LayoutParams(0, -1, 1f))
         mic = MicButton(this).apply {
@@ -966,7 +1002,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 listenAfterSpeech = listenAfter
                 val rest = text.removePrefix(early).trim()
                 val engine = tts
-                if (rest.isNotEmpty() && engine != null && ttsReady) {
+                if (rest.isNotEmpty() && engine != null && ttsReady && !HdVoice.speaking) {
                     earlyDone = false
                     engine.speak(rest, TextToSpeech.QUEUE_ADD, null, "jarvis-" + System.currentTimeMillis())
                 } else if (earlyDone) { earlyDone = false; afterSpeaking() }
@@ -979,10 +1015,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setStatus(idleText())
             return
         }
-        VoiceSettings.apply(this, engine, text, punjabiVoice)
-        engine.setAudioAttributes(CarAudio.voiceAttributes(this))
         listenAfterSpeech = listenAfter
-        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-" + System.currentTimeMillis())
+        speakOut(text, "jarvis")
         setStatus("Speaking…")
     }
 
@@ -1018,7 +1052,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             say("Is phone te Google speech recognition nahi mili. Google app update karo.", false)
             return
         }
-        tts?.stop()
+        stopVoice()
         recognizer?.destroy()
         val rec = SpeechRecognizer.createSpeechRecognizer(this)
         recognizer = rec
@@ -1048,7 +1082,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         orb.removeCallbacks(autoListenTask)
         when {
             busy -> toast(if (punjabi) "ਸੋਚ ਰਿਹਾ ਹਾਂ…" else "Thinking…")
-            tts?.isSpeaking == true -> { tts?.stop(); listenAfterSpeech = false; setMode(OrbView.Mode.IDLE); startListening() }
+            voiceSpeaking() -> { stopVoice(); listenAfterSpeech = false; setMode(OrbView.Mode.IDLE); startListening() }
             listening -> stopListening()
             else -> startListening()
         }
@@ -1154,6 +1188,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         } else text
         finishUserText(shown)
         heroText(shown, muted = false)
+        showSources(emptyList())
         spokenEarly = null; earlyDone = false
         showThinking()
         setMode(OrbView.Mode.THINKING)
@@ -1220,9 +1255,62 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .show()
     }
 
+    /** Searches Google (through Gemini) and reads the answer, with the list of websites under it. */
+    private fun searchAndAnswer(question: String, pa: Boolean) {
+        busy = true
+        setMode(OrbView.Mode.THINKING)
+        setStatus(if (pa) "Google ਤੇ ਲੱਭ ਰਿਹਾ ਹਾਂ…" else "Searching Google…")
+        Thread {
+            val (answer, sources) = try {
+                Gemini.searchAnswer(this, question, pa)
+            } catch (e: Exception) {
+                Gemini.friendlyError(e, pa) to emptyList()
+            }
+            runOnUiThread {
+                busy = false
+                say(answer, listenAfter = false)
+                showSources(sources)
+                if (liveMode && sources.isNotEmpty())
+                    addLiveLine(false, "🔗 " + sources.take(3).joinToString("  ·  ") { it.first })
+            }
+        }.start()
+    }
+
+    private fun showSources(list: List<Pair<String, String>>) {
+        if (!::heroSources.isInitialized) return
+        heroSources.removeAllViews()
+        if (list.isEmpty()) { heroSources.visibility = View.GONE; return }
+        heroSources.addView(Ui.text(this, if (punjabi) "ਸਰੋਤ (ਕਿੱਥੋਂ ਲੱਭਿਆ)" else "Sources", 13f, p.muted, Ui.medium).apply {
+            setPadding(dp(6), 0, 0, dp(6))
+        })
+        for ((title, url) in list) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                background = Ui.pressable(Ui.rounded(p.surface, dp(16).toFloat()), Ui.rounded(p.surface2, dp(16).toFloat()))
+                isClickable = true
+                setOnClickListener {
+                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (e: Exception) {}
+                }
+            }
+            row.addView(Ui.text(this, title, 15f, p.accent, Ui.medium).apply {
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            row.addView(Ui.text(this, if (title.contains('.')) "Google Search" else "Web", 12f, p.muted))
+            heroSources.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+        }
+        heroSources.visibility = View.VISIBLE
+        heroSources.alpha = 0f
+        heroSources.animate().alpha(1f).setDuration(250).start()
+    }
+
     private fun complete(userText: String, result: Reply, res: ActionResult, pa: Boolean, paVoice: Boolean, fromVoice: Boolean) {
         val task = res.task
         val data = res.followUp
+        if (result.action?.optString("type") == "search_answer") {
+            searchAndAnswer(result.action.optString("query").ifBlank { userText }, pa)
+            return
+        }
         when {
             task != null && task.isNotBlank() -> startTask(task, result.say, pa)
             res.pressSend -> {
@@ -1573,7 +1661,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         liveMode = false
         recognizer?.cancel()
         listening = false
-        tts?.stop()
+        stopVoice()
         dropLiveText()
         setMode(OrbView.Mode.IDLE)
         setStatus(idleText())
@@ -1730,7 +1818,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             contentDescription = "Talk"
             setOnClickListener {
                 when {
-                    tts?.isSpeaking == true -> { tts?.stop(); afterSpeaking() }
+                    voiceSpeaking() -> { stopVoice(); afterSpeaking() }
                     listening -> stopListening()
                     !busy -> { liveMuted = false; startListening() }
                 }

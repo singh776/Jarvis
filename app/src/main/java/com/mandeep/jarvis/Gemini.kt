@@ -84,6 +84,12 @@ object Gemini {
     /** The quick model used for Live chat / the side-button popup (Settings → backup model). */
     fun fastModel(ctx: Context): String = fallbackModel(ctx).ifEmpty { DEFAULT_FALLBACK_MODEL }
 
+    /** Retry on a brand-new connection (after a dropped one). */
+    private val freshConn = ThreadLocal<Boolean>()
+    /** Extra tools for the next call (Google Search) and the last raw answer (to read the sources). */
+    private val extraTools = ThreadLocal<JSONArray?>()
+    private val lastRaw = ThreadLocal<String?>()
+
     /** Set while a streamed answer is being read: gets the text so far (on the background thread). */
     private val streamCb = ThreadLocal<((String) -> Unit)?>()
 
@@ -127,7 +133,8 @@ object Gemini {
 
         for ((n, m) in order.withIndex()) {
             if (n > 0) onRetry?.invoke(1, true)
-            for (attempt in 0..RETRY_DELAYS_MS.size) {
+            var fresh = false
+            for (attempt in 0..RETRY_DELAYS_MS.size + 1) {
                 try {
                     val out = call(key, m, system, contents, json)
                     coolDown.remove(m)
@@ -155,9 +162,21 @@ object Gemini {
                         }
                         else -> throw e
                     }
+                } catch (e: IOException) {
+                    // a dropped / old connection: try again right away on a fresh one (once), then the next model
+                    if (e is java.net.UnknownHostException) throw e
+                    if (!fresh) {
+                        fresh = true
+                        freshConn.set(true)
+                        continue
+                    }
+                    last = GeminiException(503, "Gemini error 503: network ${e.javaClass.simpleName}")
+                    break
                 }
             }
+            freshConn.set(false)
         }
+        freshConn.set(false)
         throw last ?: GeminiException(503, "busy")
     }
 
@@ -267,6 +286,7 @@ object Gemini {
         if (json) gen.put("responseMimeType", "application/json")
         if (think.isNotEmpty()) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", think))
         if (gen.length() > 0) body.put("generationConfig", gen)
+        extraTools.get()?.let { body.put("tools", it) }
 
         val cb = streamCb.get()
         val url = URL(
@@ -282,12 +302,14 @@ object Gemini {
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             if (!keyInUrl) setRequestProperty("x-goog-api-key", key)
+            if (freshConn.get() == true) setRequestProperty("Connection", "close")
         }
         try {
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             if (cb != null) return readStream(conn, cb)
             val (code, raw) = read(conn)
             if (code !in 200..299) throw toError(code, raw)
+            lastRaw.set(raw)
             val parts = JSONObject(raw)
                 .optJSONArray("candidates")?.optJSONObject(0)
                 ?.optJSONObject("content")?.optJSONArray("parts")
@@ -446,6 +468,37 @@ object Gemini {
         return Triple(false, "$lastErr\n\n$info", emptyList())
     }
 
+    /**
+     * Answers using Google Search (like Gemini): returns the answer and the websites it used.
+     * Blocking — run off the main thread.
+     */
+    fun searchAnswer(ctx: Context, question: String, punjabi: Boolean): Pair<String, List<Pair<String, String>>> {
+        val system = "Search Google and answer the question correctly with the latest information. " +
+            "Answer in the same language as the question (Punjabi in Gurmukhi if asked in Punjabi). " +
+            "Keep it short and clear for reading aloud: 2-4 sentences, no markdown, no lists, no links."
+        extraTools.set(JSONArray().put(JSONObject().put("google_search", JSONObject())))
+        lastRaw.set(null)
+        try {
+            val text = generate(ctx, system, JSONArray().put(part("user", question)), json = false)
+            val sources = ArrayList<Pair<String, String>>()
+            try {
+                val gm = JSONObject(lastRaw.get() ?: "{}").optJSONArray("candidates")?.optJSONObject(0)
+                    ?.optJSONObject("groundingMetadata")
+                val chunks = gm?.optJSONArray("groundingChunks")
+                if (chunks != null) for (i in 0 until chunks.length()) {
+                    val w = chunks.optJSONObject(i)?.optJSONObject("web") ?: continue
+                    val uri = w.optString("uri")
+                    val title = w.optString("title").ifBlank { w.optString("domain") }.ifBlank { uri }
+                    if (uri.isNotBlank() && sources.none { it.first == title }) sources.add(title to uri)
+                }
+            } catch (e: Exception) {}
+            return text.replace(Regex("\\[\\d+(,\\s*\\d+)*\\]"), "").replace("**", "").trim() to sources.take(8)
+        } finally {
+            extraTools.set(null)
+            lastRaw.set(null)
+        }
+    }
+
     /** Tries one tiny question on [model] and says if it works (blocking — run off the main thread). */
     fun probe(ctx: Context, model: String): Pair<Boolean, String> {
         val key = apiKey(ctx)
@@ -500,7 +553,11 @@ object Gemini {
             e is GeminiException && e.code == 404 ->
                 if (punjabi) "ਇਹ ਮਾਡਲ ਨਹੀਂ ਮਿਲਿਆ। ਸੈਟਿੰਗ → AI ਵਿੱਚ ਮਾਡਲ ਬਦਲੋ।"
                 else "That model wasn't found. Change it in Settings → AI."
-            e is IOException -> keyOrNet
+            e is java.net.UnknownHostException ->
+                if (punjabi) "ਇੰਟਰਨੈੱਟ ਨਹੀਂ ਮਿਲ ਰਿਹਾ। ਨੈੱਟ ਚੈੱਕ ਕਰੋ।" else "No internet connection. Check your network."
+            e is java.net.SocketTimeoutException ->
+                if (punjabi) "ਨੈੱਟ ਬਹੁਤ ਹੌਲੀ ਹੈ, ਜਵਾਬ ਨਹੀਂ ਆਇਆ। ਫਿਰ ਪੁੱਛੋ।" else "The internet is too slow, no answer came. Ask again."
+            e is IOException -> keyOrNet + " (" + e.javaClass.simpleName + ")"
             e is IllegalStateException ->
                 if (punjabi) "ਪਹਿਲਾਂ ਸੈਟਿੰਗ ਵਿੱਚ Gemini API key ਪਾਓ।" else "Please add your Gemini API key in Settings first."
             e is GeminiException ->

@@ -417,6 +417,15 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun act(userText: String, reply: Reply, pa: Boolean, failed: Boolean) {
+        if (reply.action?.optString("type") == "search_answer") {
+            val q = reply.action.optString("query").ifBlank { userText }
+            JarvisAccess.instance?.showMini(q, if (pa) "Google ਤੇ ਲੱਭ ਰਿਹਾ ਹਾਂ…" else "Searching Google…", OrbView.Mode.THINKING)
+            Thread {
+                val ans = try { Gemini.searchAnswer(this, q, pa).first } catch (e: Exception) { Gemini.friendlyError(e, pa) }
+                main.post { speak(ans, again = false, hideAfter = true) }
+            }.start()
+            return
+        }
         val ctx: Context = JarvisAccess.instance ?: this
         val res = try { Actions(ctx).run(reply.action, pa, confirmed = true) } catch (e: Exception) { ActionResult() }
         val type = reply.action?.optString("type", "none") ?: "none"

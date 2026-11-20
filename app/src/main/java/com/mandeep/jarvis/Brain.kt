@@ -201,6 +201,7 @@ OUTPUT: ONLY a JSON object: {"say": "...", "action": {...}, "remember": ["..."],
 {"type":"sms","contact":"...","text":"...","send":true|false} (or "number" instead of "contact")
 {"type":"whatsapp_to","contact":"...","text":"...","send":true|false} (or "number") -> opens that person's WhatsApp chat directly with the text typed. "send": true when the user says send/bhej/ਭੇਜ; false when they only say write/type/likh/draft. Use "text":"" with send false to just open someone's chat.
 {"type":"play_music","query":"<song / artist>","app":"spotify|youtube music|youtube|"}
+{"type":"search_answer","query":"<question>"} -> for ANY question that needs real/current information from the internet (news, prices, weather, sports scores, people, places, "what is…", "who is…", facts you are not sure of, latest events). Singh AI then searches Google and reads the answer with the websites it came from. Put a short "say" like "Searching…" / "ਲੱਭ ਰਿਹਾ ਹਾਂ…".
 {"type":"play_playlist","shuffle":true|false} -> plays the user's own playlist (all songs they played before) when they say "meri playlist", "mere gaane", "my playlist", "jehre gaane mainu pasand aa". shuffle when they say shuffle / mix.
 {"type":"playlist_remove","query":"<song>"} -> when the user says to remove a song from their playlist.
 {"type":"navigate","query":"<place>"} -> starts Google Maps directions

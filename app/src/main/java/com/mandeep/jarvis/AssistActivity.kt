@@ -105,7 +105,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             setOnClickListener {
                 when {
                     busy -> {}
-                    tts?.isSpeaking == true -> { tts?.stop(); listen() }
+                    (tts?.isSpeaking == true || HdVoice.speaking) -> { tts?.stop(); HdVoice.stop(); listen() }
                     listening -> recognizer?.stopListening()
                     else -> { misses = 0; listen() }
                 }
@@ -164,6 +164,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         closing = true
         recognizer?.cancel()
         CarAudio.micOff(this)
+        if (!isChangingConfigurations && !HdVoice.speaking) HdVoice.stop()
         card.animate().translationY(dp(160).toFloat()).alpha(0f).setDuration(220).withLayer().start()
         glow.animate().alpha(0f).setDuration(220).withEndAction { finish(); overridePendingTransition(0, 0) }.start()
     }
@@ -214,7 +215,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             if ((quiet || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && misses++ < 1) { main.postDelayed({ listen() }, 250); return }
             setMode(OrbView.Mode.IDLE)
             said.text = if (punjabi) "ਸੁਣਿਆ ਨਹੀਂ — 🎤 ਦਬਾ ਕੇ ਫਿਰ ਬੋਲੋ" else "Didn't catch that — tap 🎤"
-            main.postDelayed({ if (!listening && !busy && tts?.isSpeaking != true) close() }, 6000)
+            main.postDelayed({ if (!listening && !busy && !(tts?.isSpeaking == true || HdVoice.speaking)) close() }, 6000)
         }
         override fun onResults(results: Bundle?) {
             listening = false
@@ -256,6 +257,22 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun act(userText: String, reply: Reply, pa: Boolean, failed: Boolean) {
         if (closing) return
+        if (reply.action?.optString("type") == "search_answer") {
+            busy = true
+            setMode(OrbView.Mode.THINKING)
+            said.text = if (pa) "Google ਤੇ ਲੱਭ ਰਿਹਾ ਹਾਂ…" else "Searching Google…"
+            val q = reply.action.optString("query").ifBlank { userText }
+            Thread {
+                val (ans, src) = try { Gemini.searchAnswer(this, q, pa) } catch (e: Exception) { Gemini.friendlyError(e, pa) to emptyList() }
+                main.post {
+                    busy = false
+                    said.text = userText
+                    speak(ans, false)
+                    if (src.isNotEmpty()) answer.text = ans + "\n\n🔗 " + src.take(3).joinToString("  ·  ") { it.first }
+                }
+            }.start()
+            return
+        }
         val res = try { Actions(this).run(reply.action, pa, confirmed = true) } catch (e: Exception) { ActionResult() }
         val type = reply.action?.optString("type", "none") ?: "none"
         when {
@@ -306,6 +323,17 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
     private fun speak(text: String, again: Boolean) {
         showAnswer(text)
         listenAfter = again
+        if (HdVoice.usable(this)) {
+            HdVoice.speak(this, text,
+                onStart = { setMode(OrbView.Mode.SPEAKING) },
+                onDone = { afterSpeaking() },
+                onFail = { phoneSpeak(text) })
+            return
+        }
+        phoneSpeak(text)
+    }
+
+    private fun phoneSpeak(text: String) {
         val t = tts
         if (!ttsReady || t == null) { afterSpeaking(); return }
         VoiceSettings.apply(this, t, text, punjabiVoice)
@@ -317,7 +345,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         setMode(OrbView.Mode.IDLE)
         if (closing) return
         if (listenAfter) { listenAfter = false; listen() }
-        else main.postDelayed({ if (!listening && !busy && tts?.isSpeaking != true) close() }, 2500)
+        else main.postDelayed({ if (!listening && !busy && !(tts?.isSpeaking == true || HdVoice.speaking)) close() }, 2500)
     }
 
     override fun onDestroy() {

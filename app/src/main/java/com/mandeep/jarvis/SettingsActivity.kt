@@ -95,6 +95,15 @@ class SettingsActivity : Activity() {
 
     // ===================================================================== layout
 
+    private var keepScroll = 0
+    private var scrollView: ScrollView? = null
+
+    /** Rebuilds the page but stays at the same place in the list. */
+    private fun rebuildHere() {
+        keepScroll = scrollView?.scrollY ?: 0
+        build()
+    }
+
     private fun build() {
         p = Ui.palette(this)
         Ui.setupWindow(this, p)
@@ -104,6 +113,12 @@ class SettingsActivity : Activity() {
             isFillViewport = true
             isVerticalScrollBarEnabled = false
             clipToPadding = false
+        }
+        scrollView = scroll
+        if (keepScroll > 0) {
+            val y = keepScroll
+            keepScroll = 0
+            scroll.post { scroll.scrollTo(0, y) }
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -716,13 +731,35 @@ class SettingsActivity : Activity() {
                 runOnUiThread { if (page == PAGE_VOICES) try { build() } catch (e: Exception) {} }
             }
         }
+        // ---- HD voices (Gemini's natural voices)
+        val hdOn = HdVoice.enabled(this)
+        val hdRows = ArrayList<Row>()
+        hdRows.add(row("HD voice (Gemini)", toggle = hdOn, onToggle = { on ->
+            HdVoice.setEnabled(this, on)
+            if (on) previewHd(HdVoice.voice(this))
+            rebuildHere()
+        }))
+        if (hdOn) {
+            val cur = HdVoice.voice(this)
+            for ((name, style, who) in HdVoice.VOICES) {
+                hdRows.add(row(name, value = "$who · $style", checked = name == cur) {
+                    HdVoice.setVoice(this, name)
+                    previewHd(name)
+                    rebuildHere()
+                })
+            }
+        }
+        section(c, "HD voices", hdRows,
+            "Natural, clear voices like Gemini's. Tap one to hear it. Needs internet and uses your API key " +
+                "(the free key has a daily limit — when it's used up or there's no internet, the phone voice below is used by itself).")
+
         val curPitch = VoiceSettings.pitch(this)
         section(c, "Voice style", VoiceSettings.PITCHES.map { (v, label) ->
             row(label + when (label) { "Deep" -> "  (more like a man)"; "Higher" -> "  (more like a woman)"; else -> "" },
                 checked = kotlin.math.abs(v - curPitch) < 0.01f) {
                 prefs.edit().putFloat("voice_pitch", v).apply()
                 preview("en", null)
-                build()
+                rebuildHere()
             }
         }, "Pick a voice below for the real man / woman sound; the style makes it deeper or higher.")
 
@@ -740,13 +777,13 @@ class SettingsActivity : Activity() {
             val saved = VoiceSettings.savedVoice(this, lang)
             val rows = ArrayList<Row>()
             rows.add(row("Automatic", checked = saved == null) {
-                VoiceSettings.saveVoice(this, lang, null); preview(lang, null); build()
+                VoiceSettings.saveVoice(this, lang, null); preview(lang, null); rebuildHere()
             })
             list.forEachIndexed { i, v ->
                 val tag = (if (v.locale.country.isNotEmpty()) v.locale.country + " · " else "") +
                     (if (v.isNetworkConnectionRequired) "online" else "offline")
                 rows.add(row("Voice ${('A' + i)}", value = tag, checked = saved == v.name) {
-                    VoiceSettings.saveVoice(this, lang, v.name); preview(lang, v); build()
+                    VoiceSettings.saveVoice(this, lang, v.name); preview(lang, v); rebuildHere()
                 })
             }
             section(c, title, rows, if (lang == "en") "Tap a voice to hear it." else null)
@@ -758,6 +795,14 @@ class SettingsActivity : Activity() {
                 }
             }
         ), "Settings → Text-to-speech → Google engine → ⚙ → Install voice data → download English (India) and ਪੰਜਾਬੀ.")
+    }
+
+    private fun previewHd(name: String) {
+        Toast.makeText(this, "Loading $name…", Toast.LENGTH_SHORT).show()
+        HdVoice.speak(this, "Sat Sri Akal! Main Singh AI haan. Hello, I am Singh AI — how can I help you today?",
+            onStart = {}, onDone = {},
+            onFail = { Toast.makeText(this, "HD voice didn't work right now (internet or daily limit). The phone voice will be used.", Toast.LENGTH_LONG).show() },
+            voiceName = name)
     }
 
     private fun preview(lang: String, v: android.speech.tts.Voice?) {
@@ -775,6 +820,7 @@ class SettingsActivity : Activity() {
 
     override fun onDestroy() {
         tts?.shutdown()
+        HdVoice.stop()
         super.onDestroy()
     }
 
