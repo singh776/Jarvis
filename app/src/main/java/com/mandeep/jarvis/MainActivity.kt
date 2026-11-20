@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.ContentValues
 import android.content.res.Configuration
 import android.net.Uri
+import org.json.JSONObject
 import android.provider.MediaStore
 import android.widget.ImageView
 import android.graphics.Color
@@ -136,6 +137,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         speakOut(text, "early")
     }
 
+    /** Real-time Gemini Live session (null = the normal listen → think → speak mode). */
+    private var liveSession: GeminiLive? = null
+    private var liveAiLine: TextView? = null
+    private var liveUserSaid = ""
+    private val useGeminiLive get() = prefs.getBoolean("gemini_live", true)
+
     private var liveChat: LinearLayout? = null
     private var liveScroll: ScrollView? = null
     private var livePending: TextView? = null
@@ -198,6 +205,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         buildUi()
         setStatus(idleText())
         tts = TextToSpeech(this, this, VoiceSettings.engine(this))
+        ttsEngine = VoiceSettings.engine(this)
 
         // Tell the user (on screen) when Gemini is busy and Jarvis is retrying.
         Gemini.onRetry = { attempt, fallback ->
@@ -221,6 +229,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (showingCrash) return
         Gemini.warmUp(this)
         Backup.autoBackup(this)
+        // voice engine changed in Settings → use it right away
+        if (ttsEngine != VoiceSettings.engine(this)) {
+            try { tts?.shutdown() } catch (e: Exception) {}
+            ttsReady = false
+            ttsEngine = VoiceSettings.engine(this)
+            tts = TextToSpeech(this, this, ttsEngine)
+        }
         if (uiSignature != Ui.signature(this)) buildUi()
         updateLangButton()
         if (!busy && !listening && mode == OrbView.Mode.IDLE) setStatus(idleText())
@@ -288,7 +303,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private val autoListenTask = Runnable {
         if (!busy && !listening && mode == OrbView.Mode.IDLE && !voiceSpeaking() && hasWindowFocus()) {
-            startListening()
+            if (useGeminiLive && Offline.online(this) && !liveMode) openLive() else startListening()
         }
     }
 
@@ -415,8 +430,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         orb = OrbView(this).apply {
             dark = p.dark
             contentDescription = "Tap to talk"
-            setOnClickListener { micTapped() }
-            setOnLongClickListener { openLive(); true }
+            setOnClickListener { if (useGeminiLive && Offline.online(this@MainActivity)) openLive() else micTapped() }
+            setOnLongClickListener { if (useGeminiLive) micTapped() else openLive(); true }
         }
         hero.addView(orb, LinearLayout.LayoutParams(dp(250), dp(250)))
         greeting = Ui.text(this, "", 26f, p.text, Ui.regular).apply {
@@ -1025,6 +1040,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun afterSpeaking() {
+        lastAnswerAt = System.currentTimeMillis()
         if (spokenEarly != null) {
             // finished the early answer while the action is still being prepared
             earlyDone = true
@@ -1034,6 +1050,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         setStatus(idleText())
         if (liveMode) {
             // Live: keep the conversation going hands-free
+            if (liveSession != null) return
             listenAfterSpeech = false
             if (!liveMuted && hasWindowFocus()) orb.postDelayed({ if (liveMode && !busy && !listening) startListening() }, 250)
             return
@@ -1078,6 +1095,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         listening = true
         setMode(OrbView.Mode.LISTENING)
         setStatus("Listening…")
+        Quiet.beep(this)
         rec.startListening(i)
     }
 
@@ -1093,6 +1111,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private var busyRetry = 0
+    private var ttsEngine: String? = null
+    private var talkMisses = 0
+    @Volatile private var lastAnswerAt = 0L
 
     private fun stopListening() {
         recognizer?.stopListening()
@@ -1140,6 +1161,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 else -> idleText()
             }
             setStatus(msg)
+            val quietErr = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+            if (!liveMode && quietErr && talkMisses < 3 && System.currentTimeMillis() - lastAnswerAt < 60_000 && hasWindowFocus()) {
+                // we're in a conversation → listen again quietly instead of stopping
+                talkMisses++
+                setStatus("")
+                orb.postDelayed({ if (!busy && !listening) startListening() }, 150)
+                return
+            }
             if (liveMode) {
                 val quiet = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
                 if (quiet && !liveMuted && liveMisses < 3 && hasWindowFocus()) {
@@ -1159,6 +1188,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             } else {
                 liveMisses = 0
                 busyRetry = 0
+                talkMisses = 0
                 handle(text)
             }
         }
@@ -1663,12 +1693,83 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         liveMisses = 0
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
         addLiveLayer(animate = true)
-        orb.postDelayed({ if (liveMode && !busy && !listening) startListening() }, 380)
+        if (useGeminiLive && Offline.online(this)) startGeminiLive()
+        else orb.postDelayed({ if (liveMode && !busy && !listening) startListening() }, 380)
+    }
+
+    /** Starts the real-time Gemini Live voice chat (like the Gemini app). Falls back to the normal mode if it can't. */
+    private fun startGeminiLive() {
+        recognizer?.cancel(); listening = false
+        stopVoice()
+        liveText?.text = if (punjabi) "ਜੁੜ ਰਿਹਾ ਹਾਂ…" else "Connecting…"
+        setMode(OrbView.Mode.THINKING)
+        val session = GeminiLive(this, object : GeminiLive.Listener {
+            override fun onReady() {
+                setMode(OrbView.Mode.LISTENING)
+                liveText?.text = if (punjabi) "ਬੋਲੋ, ਮੈਂ ਸੁਣ ਰਿਹਾ ਹਾਂ…" else "Go ahead, I'm listening…"
+            }
+            override fun onUserText(text: String) {
+                liveUserSaid = text
+                liveAiLine = null
+                showLivePending(text)
+            }
+            override fun onAiText(text: String) {
+                // your words are final now → keep them as a line
+                if (livePending != null) {
+                    val said = liveUserSaid
+                    livePending?.let { (it.parent as? ViewGroup)?.removeView(it) }
+                    livePending = null
+                    if (said.isNotBlank()) { addLiveLine(true, said); messages.add(Msg(true, said)) }
+                }
+                val line = liveAiLine
+                if (line == null) {
+                    addLiveLine(false, text)
+                    liveAiLine = liveChat?.let { lc -> lc.getChildAt(lc.childCount - 1) as? TextView }
+                } else {
+                    line.text = text
+                    liveScroll?.let { s -> s.post { s.smoothScrollTo(0, liveChat?.height ?: 0) } }
+                }
+                heroText(text, muted = false)
+            }
+            override fun onTurnDone() {
+                liveAiLine?.text?.toString()?.takeIf { it.isNotBlank() }?.let { messages.add(Msg(false, it)); saveChatSoon() }
+                liveAiLine = null
+                liveUserSaid = ""
+            }
+            override fun onSpeaking(speaking: Boolean) {
+                setMode(if (speaking) OrbView.Mode.SPEAKING else OrbView.Mode.LISTENING)
+            }
+            override fun onLevel(level: Float) {
+                livePill?.level = level
+                liveGlow?.level = level
+            }
+            override fun onAction(actionJson: String): String {
+                val a = try { JSONObject(actionJson) } catch (e: Exception) { return "bad action JSON" }
+                if (a.optString("type") == "search_answer") return "Use Google Search for this."
+                val res = try { actions.run(a, punjabi, confirmed = true) } catch (e: Exception) { return "failed" }
+                res.typeText?.let { JarvisAccess.instance?.typeHere(it, res.typeSend, punjabi); return "typing it" }
+                res.task?.takeIf { it.isNotBlank() }?.let { JarvisAccess.instance?.runTask(it, punjabi); return "doing it on screen" }
+                res.followUp?.let { return it.take(3000) } // e.g. notifications — Gemini reads them out
+                return res.message ?: "done"
+            }
+            override fun onError(message: String) {
+                liveSession = null
+                if (!liveMode) return
+                addLiveLine(false, (if (punjabi) "Gemini Live ਨਹੀਂ ਜੁੜਿਆ" else "Gemini Live couldn't connect") + " ($message)")
+                // the previous Live model may be gone — look it up again next time
+                prefs.edit().remove("live_model").apply()
+                setMode(OrbView.Mode.IDLE)
+                orb.postDelayed({ if (liveMode && !busy && !listening) startListening() }, 400)
+            }
+        })
+        liveSession = session
+        session.start(brain.liveSystem(punjabi, punjabiVoice, phoneInfo()), HdVoice.voice(this), punjabi)
     }
 
     private fun closeLive() {
         if (!liveMode) return
         liveMode = false
+        liveSession?.stop(); liveSession = null; liveAiLine = null
         recognizer?.cancel()
         listening = false
         stopVoice()
@@ -1842,6 +1943,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             micB.glyph = if (liveMuted) Glyph.MIC_OFF else Glyph.MIC
             micB.bgColor = if (liveMuted) Color.parseColor("#FFDAD6") else (if (p.dark) p.surface2 else Color.WHITE)
             micB.invalidate()
+            liveSession?.let { it.muted = liveMuted; return@setOnClickListener }
             if (liveMuted && listening) { recognizer?.cancel(); listening = false; setMode(OrbView.Mode.IDLE) }
             else if (!liveMuted && !busy && !listening) startListening()
         }

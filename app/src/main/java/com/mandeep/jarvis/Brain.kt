@@ -173,6 +173,9 @@ class Brain(private val context: Context) {
             "(and use set_language). The microphone is currently set to ${if (punjabiMode) "Punjabi" else "English"}."
     }
 
+    /** The same instructions, for the real-time Gemini Live voice chat. */
+    fun liveSystem(punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String) = systemPrompt(punjabiMode, punjabiVoice, phoneInfo)
+
     private fun systemPrompt(punjabiMode: Boolean, punjabiVoice: Boolean, phoneInfo: String): String {
         val now = SimpleDateFormat("EEEE, d MMMM yyyy, h:mm a", Locale.ENGLISH).format(Date())
         return """

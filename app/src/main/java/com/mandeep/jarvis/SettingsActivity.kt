@@ -774,6 +774,14 @@ class SettingsActivity : Activity() {
                 runOnUiThread { if (page == PAGE_VOICES) try { build() } catch (e: Exception) {} }
             }, VoiceSettings.engine(this))
         }
+        // ---- Gemini Live (real-time voice chat)
+        section(c, "Gemini Live", listOf(
+            row("Real-time voice chat", toggle = prefs.getBoolean("gemini_live", true), onToggle = { on ->
+                prefs.edit().putBoolean("gemini_live", on).apply()
+            })
+        ), "Like the Gemini app: talk and it answers instantly in a natural voice; you can interrupt it any time. " +
+            "Tap the big orb to start. Uses the HD voice picked below. Free on the Gemini free tier (needs internet).")
+
         // ---- HD voices (Gemini's natural voices)
         val hdOn = HdVoice.enabled(this)
         val hdRows = ArrayList<Row>()
@@ -782,7 +790,7 @@ class SettingsActivity : Activity() {
             if (on) previewHd(HdVoice.voice(this))
             rebuildHere()
         }))
-        if (hdOn) {
+        run { // the list is also the voice of Gemini Live
             val cur = HdVoice.voice(this)
             for ((name, style, who) in HdVoice.VOICES) {
                 hdRows.add(row(name, value = "$who · $style", checked = name == cur) {
@@ -822,7 +830,7 @@ class SettingsActivity : Activity() {
                     tts = null; ttsReady = false
                     rebuildHere()
                 }
-            }, "Samsung's and Google's engines have different voices — try both. Changes apply after reopening Singh AI.")
+            }, "Samsung's and Google's engines have different voices — try both. Voices marked HD sound the most natural.")
         }
 
         val all = try { tts?.voices?.toList().orEmpty() } catch (e: Exception) { emptyList() }
@@ -842,7 +850,7 @@ class SettingsActivity : Activity() {
                 val tag = (if (VoiceSettings.isHd(v)) "HD · " else "") +
                     (if (v.locale.country.isNotEmpty()) v.locale.country + " · " else "") +
                     (if (v.isNetworkConnectionRequired) "online" else "offline")
-                rows.add(row("Voice ${('A' + i)}", value = tag, checked = saved == v.name) {
+                rows.add(row(VoiceSettings.label(v).ifBlank { "Voice ${('A' + i)}" }, value = tag, checked = saved == v.name) {
                     VoiceSettings.saveVoice(this, lang, v.name); preview(lang, v); rebuildHere()
                 })
             }

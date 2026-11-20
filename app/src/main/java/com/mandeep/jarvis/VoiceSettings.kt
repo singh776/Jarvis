@@ -17,6 +17,20 @@ object VoiceSettings {
     fun engine(c: Context): String? = prefs(c).getString("tts_engine", null)?.takeIf { it.isNotEmpty() }
     fun setEngine(c: Context, pkg: String?) = prefs(c).edit().putString("tts_engine", pkg ?: "").apply()
 
+    /** A readable name for a phone voice, e.g. "Samsung · Woman 1", "Google · ENA". */
+    fun label(v: Voice): String {
+        val n = v.name.lowercase()
+        val who = when {
+            Regex("smt?f\\d|#female|female|-f\\d|_f\\d").containsMatchIn(n) -> "Woman"
+            Regex("smt?m\\d|#male|[^e]male|-m\\d|_m\\d").containsMatchIn(n) -> "Man"
+            else -> null
+        }
+        val code = Regex("x-([a-z]{3})").find(n)?.groupValues?.get(1)?.uppercase()
+            ?: Regex("smt([fm]\\d+)").find(n)?.groupValues?.get(1)?.uppercase()
+            ?: v.name.substringAfterLast('-').take(10)
+        return listOfNotNull(who, code).joinToString(" · ")
+    }
+
     /** HD = the engine's high-quality (neural) voices. */
     fun isHd(v: Voice) = v.quality >= Voice.QUALITY_HIGH
 

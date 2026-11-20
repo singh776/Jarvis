@@ -201,7 +201,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         setMode(OrbView.Mode.LISTENING)
         said.setTextColor(p.muted)
         said.text = if (punjabi) "ਸੁਣ ਰਿਹਾ ਹਾਂ…" else "Listening…"
-        val start = Runnable { try { rec.startListening(i) } catch (e: Exception) { listening = false } }
+        val start = Runnable { try { Quiet.beep(this); rec.startListening(i) } catch (e: Exception) { listening = false } }
         if (CarAudio.micOn(this)) main.postDelayed(start, 700) else start.run()
     }
 
@@ -213,16 +213,17 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             spark.level = l; glow.level = l; mic.level = l.coerceIn(0f, 1f)
         }
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() { setMode(OrbView.Mode.THINKING) }
+        override fun onEndOfSpeech() { Quiet.beep(this@AssistActivity, 600); setMode(OrbView.Mode.THINKING) }
         override fun onError(error: Int) {
             listening = false
             val quiet = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
             if (!quiet && CarAudio.isCarMicOn()) { CarAudio.carMicFailed(this@AssistActivity); main.postDelayed({ listen() }, 300); return }
             CarAudio.micOff(this@AssistActivity)
-            if ((quiet || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && misses++ < 1) { main.postDelayed({ listen() }, 250); return }
+            // keep listening quietly while we're talking; close only after a long silence (~20 s)
+            if ((quiet || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) && misses++ < 4) { main.postDelayed({ listen() }, 150); return }
             setMode(OrbView.Mode.IDLE)
             said.text = if (punjabi) "ਸੁਣਿਆ ਨਹੀਂ — 🎤 ਦਬਾ ਕੇ ਫਿਰ ਬੋਲੋ" else "Didn't catch that — tap 🎤"
-            main.postDelayed({ if (!listening && !busy && !(tts?.isSpeaking == true || HdVoice.speaking)) close() }, 6000)
+            main.postDelayed({ if (!listening && !busy && !(tts?.isSpeaking == true || HdVoice.speaking)) close() }, 4000)
         }
         override fun onResults(results: Bundle?) {
             listening = false

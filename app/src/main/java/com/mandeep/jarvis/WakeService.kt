@@ -217,6 +217,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         try {
             listeningNow = true
+            Quiet.beep(this)
             rec.startListening(i)
         } catch (e: Exception) {
             listeningNow = false
@@ -250,7 +251,8 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         val start = Runnable {
             try {
                 listeningNow = true
-                rec.startListening(i)
+                Quiet.beep(this)
+            rec.startListening(i)
             } catch (e: Exception) {
                 endSession(true)
             }
