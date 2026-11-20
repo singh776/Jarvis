@@ -2,4 +2,5 @@
 <resources>
     <string name="access_label">Singh AI screen control</string>
     <string name="access_desc">Singh AI nu screen dekhan te kise vi app vich tap, type te scroll karan dinda hai, taan jo tusi bol ke phone de sare kamm karva sako. Singh AI sirf ohi karda jo tusi kehnde ho.</string>
+    <string name="shortcut_talk">Talk to Singh AI</string>
 </resources>

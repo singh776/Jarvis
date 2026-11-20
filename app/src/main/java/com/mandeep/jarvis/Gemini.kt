@@ -492,7 +492,10 @@ object Gemini {
                     if (uri.isNotBlank() && sources.none { it.first == title }) sources.add(title to uri)
                 }
             } catch (e: Exception) {}
-            return text.replace(Regex("\\[\\d+(,\\s*\\d+)*\\]"), "").replace("**", "").trim() to sources.take(8)
+            val clean = text.replace(Regex("\\[\\d+(,\\s*\\d+)*\\]"), "").replace("**", "").trim()
+            // learn it: the same question will work later even without internet
+            try { Knowledge.save(ctx, question, clean, sources) } catch (e: Exception) {}
+            return clean to sources.take(8)
         } finally {
             extraTools.set(null)
             lastRaw.set(null)

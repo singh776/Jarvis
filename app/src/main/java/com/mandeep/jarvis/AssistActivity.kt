@@ -54,6 +54,11 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun dp(v: Int) = Ui.dp(this, v.toFloat())
 
+    companion object {
+        const val EXTRA_COMMAND = "command"
+        const val EXTRA_FROM_WAKE = "from_wake"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val micOk = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -68,9 +73,11 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         WakeService.setAppVisible(true) // the "Hey Singh AI" listener lets go of the mic
         p = Ui.palette(this)
         buildUi()
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(this, this, VoiceSettings.engine(this))
         Gemini.warmUp(this)
-        main.postDelayed({ listen() }, 250)
+        val cmd = intent?.getStringExtra(EXTRA_COMMAND)
+        if (!cmd.isNullOrBlank()) main.postDelayed({ handle(cmd) }, 200)  // "Singh AI, open YouTube" — do it straight away
+        else main.postDelayed({ listen() }, 250)
     }
 
     // ------------------------------------------------------------------ UI
@@ -242,7 +249,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         val pa = punjabi
         val quick = try { Actions(this).quickOpen(text, pa) } catch (e: Exception) { null }
         if (quick != null) { busy = false; speak(quick, again = false); return }
-        if (!Offline.online(this)) { busy = false; speak(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", again = false); return }
+        if (!Offline.online(this)) { busy = false; Knowledge.offlineAnswer(this, text, pa)?.let { speak(it, again = false); return }; speak(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", again = false); return }
         Thread {
             var failed = false
             val reply = try {

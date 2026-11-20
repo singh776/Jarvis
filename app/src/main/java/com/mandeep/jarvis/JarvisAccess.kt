@@ -38,7 +38,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(this, this, VoiceSettings.engine(this))
     }
 
     override fun onInit(status: Int) {
@@ -84,6 +84,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
     // ------------------------------------------- mini panel ("Singh AI" popup)
 
     private var mini: android.view.View? = null
+    val miniShowing: Boolean get() = mini != null
     private var miniWave: WaveBar? = null
     private var miniText: TextView? = null
     private var miniHint: TextView? = null

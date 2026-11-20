@@ -49,17 +49,20 @@ object HdVoice {
     fun usable(c: Context) = enabled(c) && Offline.online(c) && System.currentTimeMillis() > pauseUntil
     @Volatile private var pauseUntil = 0L
 
-    /** The text-to-speech model on this key (found once, then remembered). */
-    private fun model(c: Context): String {
-        prefs(c).getString("tts_model", null)?.let { if (it.isNotEmpty()) return it }
+    /** Why the last HD try didn't work (shown in Settings). */
+    @Volatile var lastError = ""
+        private set
+
+    /** Text-to-speech models on this key, the remembered working one first. */
+    private fun models(c: Context): List<String> {
+        val saved = prefs(c).getString("tts_model", null)?.takeIf { it.isNotEmpty() }
         val found = try {
             val (ok, _, names) = Gemini.testKey(Gemini.apiKey(c))
-            if (ok) names.filter { it.contains("tts") && it.contains("flash") }.maxOrNull()
-                ?: names.firstOrNull { it.contains("tts") } else null
-        } catch (e: Exception) { null }
-        val m = found ?: DEFAULT_MODEL
-        prefs(c).edit().putString("tts_model", m).apply()
-        return m
+            if (ok) names.filter { it.contains("tts") } else emptyList()
+        } catch (e: Exception) { emptyList() }
+        // flash ones first (free tier), newest first
+        val sorted = found.sortedWith(compareBy<String>({ !it.contains("flash") }, { it.contains("pro") }).thenByDescending { it })
+        return (listOfNotNull(saved) + sorted + DEFAULT_MODEL).distinct()
     }
 
     fun stop() {
@@ -83,7 +86,7 @@ object HdVoice {
             if (id != playId) return@Thread
             if (pcm == null || pcm.isEmpty()) {
                 speaking = false
-                pauseUntil = System.currentTimeMillis() + 2 * 60_000 // use the phone voice for a bit
+                pauseUntil = System.currentTimeMillis() + 5 * 60_000 // use the phone voice for a bit
                 main.post { onFail() }
                 return@Thread
             }
@@ -93,9 +96,9 @@ object HdVoice {
 
     private fun synth(c: Context, text: String, voice: String): ByteArray? {
         val key = Gemini.apiKey(c)
-        if (key.isEmpty()) return null
-        var m = model(c)
-        for (attempt in 0..1) {
+        if (key.isEmpty()) { lastError = "No API key"; return null }
+        val list = models(c)
+        for (m in list) {
             val body = JSONObject()
                 .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", text)))))
                 .put("generationConfig", JSONObject()
@@ -106,29 +109,39 @@ object HdVoice {
                 URLEncoder.encode(m, "UTF-8") + ":generateContent").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = 8000
-                readTimeout = 25000
+                readTimeout = 30000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 setRequestProperty("x-goog-api-key", key)
             }
-            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
-            if (code == 404 && attempt == 0) {
-                // model name changed → look it up again
-                prefs(c).edit().remove("tts_model").apply()
-                m = model(c)
-                continue
+            val (code, raw) = try {
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val cd = conn.responseCode
+                cd to ((if (cd in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: "")
+            } catch (e: Exception) { lastError = "Network: ${e.javaClass.simpleName}"; return null }
+            if (code !in 200..299) {
+                val msg = try { JSONObject(raw).optJSONObject("error")?.optString("message").orEmpty() } catch (e: Exception) { "" }
+                lastError = when {
+                    code == 429 && msg.contains("limit: 0") -> "Your free key has no HD voice use for $m"
+                    code == 429 -> "Free HD voice limit used up for today ($m)"
+                    code == 404 -> "$m not available"
+                    else -> "$code: ${msg.take(80)}"
+                }
+                continue // try the next TTS model
             }
-            if (code !in 200..299) return null
-            val parts = JSONObject(raw).optJSONArray("candidates")?.optJSONObject(0)
-                ?.optJSONObject("content")?.optJSONArray("parts") ?: return null
+            val parts = try {
+                JSONObject(raw).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+            } catch (e: Exception) { null } ?: continue
             for (i in 0 until parts.length()) {
                 val d = parts.optJSONObject(i)?.optJSONObject("inlineData")
                     ?: parts.optJSONObject(i)?.optJSONObject("inline_data") ?: continue
-                return Base64.decode(d.optString("data"), Base64.DEFAULT)
+                val pcm = Base64.decode(d.optString("data"), Base64.DEFAULT)
+                if (pcm.isNotEmpty()) {
+                    prefs(c).edit().putString("tts_model", m).apply()
+                    lastError = ""
+                    return pcm
+                }
             }
-            return null
         }
         return null
     }

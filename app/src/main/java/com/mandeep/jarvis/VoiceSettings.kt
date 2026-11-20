@@ -13,6 +13,13 @@ object VoiceSettings {
 
     private fun prefs(c: Context) = c.getSharedPreferences("jarvis", Context.MODE_PRIVATE)
 
+    /** Which phone voice engine to use (e.g. Google or Samsung). null = phone's default. */
+    fun engine(c: Context): String? = prefs(c).getString("tts_engine", null)?.takeIf { it.isNotEmpty() }
+    fun setEngine(c: Context, pkg: String?) = prefs(c).edit().putString("tts_engine", pkg ?: "").apply()
+
+    /** HD = the engine's high-quality (neural) voices. */
+    fun isHd(v: Voice) = v.quality >= Voice.QUALITY_HIGH
+
     fun pitch(c: Context) = prefs(c).getFloat("voice_pitch", 1.0f)
     fun speed(c: Context) = prefs(c).getFloat("voice_speed", 1.0f)
 

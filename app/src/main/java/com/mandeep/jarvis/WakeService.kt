@@ -78,7 +78,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             stopSelf()
             return
         }
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(this, this, VoiceSettings.engine(this))
         val f = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -358,8 +358,23 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         val end = wakeIndex(heard)
         val rest = if (end >= 0) heard.substring(end).trim(' ', ',', '.', '!', '?') else ""
         stopRecognizer()
+        // Open the Gemini-style popup at the bottom (works over any app, even when Singh AI was closed).
+        // Android allows this from the background when Screen control or "Display over other apps" is on.
+        val canPop = JarvisAccess.instance != null || android.provider.Settings.canDrawOverlays(this)
+        if (canPop) {
+            try {
+                val i = Intent(this, AssistActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .putExtra(AssistActivity.EXTRA_FROM_WAKE, true)
+                if (rest.split(" ").count { it.isNotBlank() } >= 2) i.putExtra(AssistActivity.EXTRA_COMMAND, rest)
+                state = State.BUSY // the popup uses the mic now; we start again when it closes
+                startActivity(i)
+                return
+            } catch (e: Exception) {
+                state = State.WAKE
+            }
+        }
         if (JarvisAccess.instance == null) {
-            // the popup needs Screen Control; never pop the whole app open by itself
             state = State.WAKE
             restartSoon(3000)
             return
@@ -388,6 +403,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             return
         }
         if (!Offline.online(this)) {
+            Knowledge.offlineAnswer(this, text, pa)?.let { speak(it, again = false, hideAfter = true); return }
             speak(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", again = false, hideAfter = true)
             return
         }
@@ -575,7 +591,10 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             s.main.post {
                 if (visible) {
                     if (s.state == State.WAKE) s.stopRecognizer()
-                } else s.listenForWake()
+                } else {
+                    if (s.state == State.BUSY && JarvisAccess.instance?.miniShowing != true) s.state = State.WAKE
+                    s.listenForWake()
+                }
             }
         }
     }

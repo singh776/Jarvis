@@ -55,7 +55,7 @@ class CarService : MediaBrowserService(), TextToSpeech.OnInitListener {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(this, this, VoiceSettings.engine(this))
         session = MediaSession(this, "SinghAI").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlayFromSearch(query: String?, extras: Bundle?) = handle(query.orEmpty())

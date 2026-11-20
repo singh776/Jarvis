@@ -507,6 +507,49 @@ class SettingsActivity : Activity() {
             "Say \"remember…\" and Singh AI keeps it forever (your name, family, likes). Say \"forget…\" to remove it."
         )
 
+        // ---- Learning & backup
+        section(
+            c, "Learning & backup", listOf(
+                row("Learned from Google", Glyph.GLOBE, iosBlue, value = "${Knowledge.count(this)}", chevron = true) {
+                    AlertDialog.Builder(this, Ui.dialogTheme(this))
+                        .setTitle("Learned from Google")
+                        .setMessage("${Knowledge.count(this)} answers Singh AI found on Google are saved. " +
+                            "If you ask the same thing without internet, it answers from these.")
+                        .setPositiveButton("OK", null)
+                        .setNegativeButton("Clear") { _, _ -> Knowledge.clear(this); rebuildHere() }
+                        .show()
+                },
+                row("Daily backup", Glyph.CHECK, iosGreen, toggle = prefs.getBoolean("auto_backup", true), onToggle = { on ->
+                    prefs.edit().putBoolean("auto_backup", on).apply()
+                }),
+                row("Backup now", Glyph.FILE, iosOrange, chevron = true) {
+                    Toast.makeText(this, "Making backup…", Toast.LENGTH_SHORT).show()
+                    Thread {
+                        val where = Backup.export(this)
+                        runOnUiThread {
+                            AlertDialog.Builder(this, Ui.dialogTheme(this))
+                                .setTitle(if (where.startsWith("❌")) "Backup failed" else "Backup saved ✓")
+                                .setMessage(if (where.startsWith("❌")) where else
+                                    "Saved in $where\n\nIt has your memory, playlist, settings and a training.jsonl file " +
+                                        "(answers learned from Google — ready to train your own AI). No chats and no API key inside.")
+                                .setPositiveButton("OK", null)
+                                .show()
+                        }
+                    }.start()
+                },
+                row("Restore from backup", Glyph.FILE, iosGray, chevron = true) {
+                    try {
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("application/zip"), REQ_RESTORE)
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "No file picker found", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            ),
+            "Singh AI keeps what it finds on Google so it can answer the same question later without internet. " +
+                "It does not learn from your chats. A backup zip is saved in Downloads/SinghAI once a day."
+        )
+
         // ---- About
         val version = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
@@ -726,10 +769,10 @@ class SettingsActivity : Activity() {
 
     private fun voicesPage(c: LinearLayout) {
         if (tts == null) {
-            tts = android.speech.tts.TextToSpeech(this) { status ->
+            tts = android.speech.tts.TextToSpeech(this, { status ->
                 ttsReady = status == android.speech.tts.TextToSpeech.SUCCESS
                 runOnUiThread { if (page == PAGE_VOICES) try { build() } catch (e: Exception) {} }
-            }
+            }, VoiceSettings.engine(this))
         }
         // ---- HD voices (Gemini's natural voices)
         val hdOn = HdVoice.enabled(this)
@@ -767,11 +810,27 @@ class SettingsActivity : Activity() {
             section(c, null, listOf(row("Loading voices…")))
             return
         }
+        // ---- phone voice engine (free, also works without internet)
+        val engines = try { tts?.engines.orEmpty() } catch (e: Exception) { emptyList() }
+        if (engines.size > 1) {
+            val curEngine = VoiceSettings.engine(this) ?: tts?.defaultEngine
+            section(c, "Phone voice engine (free)", engines.map { en ->
+                row(en.label, checked = en.name == curEngine) {
+                    VoiceSettings.setEngine(this, en.name)
+                    // reload voices from the new engine
+                    try { tts?.shutdown() } catch (e: Exception) {}
+                    tts = null; ttsReady = false
+                    rebuildHere()
+                }
+            }, "Samsung's and Google's engines have different voices — try both. Changes apply after reopening Singh AI.")
+        }
+
         val all = try { tts?.voices?.toList().orEmpty() } catch (e: Exception) { emptyList() }
         for ((lang, title) in listOf("en" to "English voices", "pa" to "Punjabi voices", "hi" to "Hindi voices")) {
             val list = all.filter { v ->
                 v.locale.language == lang && (lang != "en" || v.locale.country in listOf("IN", "US", "GB", "AU"))
-            }.sortedWith(compareBy({ it.locale.country != "IN" }, { it.isNetworkConnectionRequired }, { it.name }))
+            }.filter { !it.features.orEmpty().contains("notInstalled") }
+                .sortedWith(compareBy({ !VoiceSettings.isHd(it) }, { it.locale.country != "IN" }, { it.isNetworkConnectionRequired }, { it.name }))
                 .take(24)
             if (list.isEmpty()) continue
             val saved = VoiceSettings.savedVoice(this, lang)
@@ -780,7 +839,8 @@ class SettingsActivity : Activity() {
                 VoiceSettings.saveVoice(this, lang, null); preview(lang, null); rebuildHere()
             })
             list.forEachIndexed { i, v ->
-                val tag = (if (v.locale.country.isNotEmpty()) v.locale.country + " · " else "") +
+                val tag = (if (VoiceSettings.isHd(v)) "HD · " else "") +
+                    (if (v.locale.country.isNotEmpty()) v.locale.country + " · " else "") +
                     (if (v.isNetworkConnectionRequired) "online" else "offline")
                 rows.add(row("Voice ${('A' + i)}", value = tag, checked = saved == v.name) {
                     VoiceSettings.saveVoice(this, lang, v.name); preview(lang, v); rebuildHere()
@@ -801,7 +861,14 @@ class SettingsActivity : Activity() {
         Toast.makeText(this, "Loading $name…", Toast.LENGTH_SHORT).show()
         HdVoice.speak(this, "Sat Sri Akal! Main Singh AI haan. Hello, I am Singh AI — how can I help you today?",
             onStart = {}, onDone = {},
-            onFail = { Toast.makeText(this, "HD voice didn't work right now (internet or daily limit). The phone voice will be used.", Toast.LENGTH_LONG).show() },
+            onFail = {
+                AlertDialog.Builder(this, Ui.dialogTheme(this))
+                    .setTitle("HD voice didn't work")
+                    .setMessage(HdVoice.lastError.ifBlank { "No answer from Google." } +
+                        "\n\nGemini HD voices need the free daily limit on your key. If your key has none, use the free phone voices below " +
+                        "— pick an engine (Google / Samsung) and a voice marked HD.")
+                    .setPositiveButton("OK", null).show()
+            },
             voiceName = name)
     }
 
@@ -816,6 +883,21 @@ class SettingsActivity : Activity() {
         VoiceSettings.apply(this, t, sample, punjabiVoice = true)
         if (v != null) try { t.voice = v } catch (e: Exception) {}
         t.speak(sample, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "preview")
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_RESTORE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        Thread {
+            val ok = Backup.restore(this, uri)
+            runOnUiThread {
+                Toast.makeText(this, if (ok) "Restored ✓" else "Couldn't read that backup", Toast.LENGTH_LONG).show()
+                if (ok) rebuildHere()
+            }
+        }.start()
     }
 
     override fun onDestroy() {
@@ -894,6 +976,7 @@ class SettingsActivity : Activity() {
         const val PAGE_ACCENT = "accent"
         const val PAGE_APIKEY = "apikey"
         const val PAGE_VOICES = "voices"
+        private const val REQ_RESTORE = 77
         private const val REQ_ALL = 8
     }
 }

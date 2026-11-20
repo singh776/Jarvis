@@ -194,7 +194,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         brain.clearHistory() // every time the app starts: a new chat (old ones are in the ≡ list)
         buildUi()
         setStatus(idleText())
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(this, this, VoiceSettings.engine(this))
 
         // Tell the user (on screen) when Gemini is busy and Jarvis is retrying.
         Gemini.onRetry = { attempt, fallback ->
@@ -217,6 +217,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onResume()
         if (showingCrash) return
         Gemini.warmUp(this)
+        Backup.autoBackup(this)
         if (uiSignature != Ui.signature(this)) buildUi()
         updateLangButton()
         if (!busy && !listening && mode == OrbView.Mode.IDLE) setStatus(idleText())
@@ -1206,6 +1207,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
             if (!Offline.online(this)) {
                 busy = false
+                Knowledge.offlineAnswer(this, text, pa)?.let { say(it, listenAfter = false); return }
                 say(if (pa) "ਨੈੱਟ ਨਹੀਂ ਚੱਲਦਾ। ਬਿਨਾਂ ਨੈੱਟ ਮੈਂ ਐਪ ਖੋਲ੍ਹ ਸਕਦਾ, ਕਾਲ ਕਰ ਸਕਦਾ, ਟਾਰਚ, ਆਵਾਜ਼ ਤੇ ਫ਼ੋਨ ਦੇ ਗਾਣੇ ਚਲਾ ਸਕਦਾ ਹਾਂ।" else "No internet. Offline I can open apps, make calls, torch, volume and play songs saved on the phone.", listenAfter = false)
                 return
             }
