@@ -229,6 +229,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (showingCrash) return
         Gemini.warmUp(this)
         Backup.autoBackup(this)
+        JarvisAccess.instance?.hideBubble()
         // voice engine changed in Settings → use it right away
         if (ttsEngine != VoiceSettings.engine(this)) {
             try { tts?.shutdown() } catch (e: Exception) {}
@@ -288,7 +289,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (showingCrash) return
         lastPausedAt = System.currentTimeMillis()
         saveChat()
-        WakeService.setAppVisible(false)
+        if (liveSession != null) {
+            // still talking in the background → small Singh AI bubble on the screen edge
+            JarvisAccess.instance?.showBubble()
+        } else WakeService.setAppVisible(false)
         orb.removeCallbacks(autoListenTask)
         if (listening) {
             recognizer?.cancel()
@@ -302,13 +306,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private val autoListen: Boolean get() = prefs.getBoolean("auto_listen", true)
 
     private val autoListenTask = Runnable {
-        if (!busy && !listening && mode == OrbView.Mode.IDLE && !voiceSpeaking() && hasWindowFocus()) {
+        if (!busy && !listening && mode == OrbView.Mode.IDLE && !voiceSpeaking() && hasWindowFocus() && attachment == null) {
             if (useGeminiLive && Offline.online(this) && !liveMode) openLive() else startListening()
         }
     }
 
     /** Opens the mic by itself when the app comes to the screen (Settings → Auto Listen). */
+    /** True while the gallery / camera / file picker is open — don't auto-start anything when we come back. */
+    private var pickingFile = false
+
     private fun autoListenSoon() {
+        if (pickingFile || attachment != null || busy) { pickingFile = false; return }
         if (!autoListen || brain.apiKey.isEmpty()) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
         orb.removeCallbacks(autoListenTask)
@@ -1214,6 +1222,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun handle(text: String, fromVoice: Boolean = true) {
         if (busy) return
+        if (attachment != null && liveMode) closeLive() // one thing at a time: the photo answer, no Live voice on top
         busy = true
         val file = attachment
         val shown = if (file != null) {
@@ -1443,9 +1452,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         attachment = a
         refreshAttachChip()
         if (a != null) {
-            setStatus(
-                "Now ask — e.g. \"read it\", \"translate to Punjabi\", \"what is this?\""
-            )
+            // just sent a photo/file → look at it, search Google about it and tell (no need to ask)
+            if (liveMode) closeLive()
+            setStatus(if (punjabi) "ਫੋਟੋ ਦੇਖ ਰਿਹਾ ਹਾਂ…" else "Looking at it…")
+            orb.postDelayed({ if (attachment === a && !busy) handle("", fromVoice = false) }, 300)
         }
     }
 
@@ -1543,6 +1553,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         prefs.edit().putString("camera_uri", uri?.toString() ?: "").apply()
         try {
+            pickingFile = true
             startActivityForResult(i, REQ_CAMERA)
         } catch (e: Exception) {
             toast("Couldn't open the camera")
@@ -1552,6 +1563,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun pickPhoto() {
         val i = if (android.os.Build.VERSION.SDK_INT >= 33) Intent(MediaStore.ACTION_PICK_IMAGES)
         else Intent(Intent.ACTION_GET_CONTENT).setType("image/*")
+        pickingFile = true
         try { startActivityForResult(i, REQ_PHOTO) } catch (e: Exception) {
             startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).setType("image/*"), REQ_PHOTO)
         }
@@ -1562,6 +1574,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             .addCategory(Intent.CATEGORY_OPENABLE)
             .setType("*/*")
             .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "application/pdf", "text/plain"))
+        pickingFile = true
         try { startActivityForResult(i, REQ_FILE) } catch (e: Exception) {
             toast("Couldn't open files")
         }
@@ -1738,6 +1751,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
             override fun onSpeaking(speaking: Boolean) {
                 setMode(if (speaking) OrbView.Mode.SPEAKING else OrbView.Mode.LISTENING)
+                JarvisAccess.instance?.bubbleMode(if (speaking) OrbView.Mode.SPEAKING else OrbView.Mode.LISTENING)
             }
             override fun onLevel(level: Float) {
                 livePill?.level = level
@@ -1754,6 +1768,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
             override fun onError(message: String) {
                 liveSession = null
+                LiveService.stop(this@MainActivity)
+                JarvisAccess.instance?.hideBubble()
                 if (!liveMode) return
                 addLiveLine(false, (if (punjabi) "Gemini Live ਨਹੀਂ ਜੁੜਿਆ" else "Gemini Live couldn't connect") + " ($message)")
                 // the previous Live model may be gone — look it up again next time
@@ -1763,6 +1779,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         })
         liveSession = session
+        LiveService.start(this) // keeps the mic allowed when another app opens
         session.start(brain.liveSystem(punjabi, punjabiVoice, phoneInfo()), HdVoice.voice(this), punjabi)
     }
 
@@ -1770,6 +1787,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (!liveMode) return
         liveMode = false
         liveSession?.stop(); liveSession = null; liveAiLine = null
+        LiveService.stop(this)
+        JarvisAccess.instance?.hideBubble()
         recognizer?.cancel()
         listening = false
         stopVoice()
@@ -2003,6 +2022,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         if (showingCrash) { super.onDestroy(); return }
         Gemini.onRetry = null
+        liveSession?.stop(); liveSession = null
+        LiveService.stop(this)
+        JarvisAccess.instance?.hideBubble()
         recognizer?.destroy()
         tts?.shutdown()
         super.onDestroy()

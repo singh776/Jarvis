@@ -650,11 +650,89 @@ If the goal is already complete, reply "done".
     }
 
     private fun speak(text: String) {
+        // Gemini Live is talking already → don't add a second voice on top
+        if (LiveService.active) return
+        if (text.isBlank()) return
+        if (HdVoice.usable(this)) { HdVoice.speak(this, text, {}, {}, { phoneSpeak(text) }); return }
+        phoneSpeak(text)
+    }
+
+    private fun phoneSpeak(text: String) {
         val t = tts ?: return
         if (!ttsReady || text.isBlank()) return
         VoiceSettings.apply(this, t, text, punjabiVoice)
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "agent-" + System.currentTimeMillis())
     }
+
+    // ------------------------------------------------------------ floating bubble
+
+    private var bubble: SparkleView? = null
+
+    /** Small round Singh AI bubble on the screen edge while it's working in the background. Drag it anywhere; tap to open. */
+    fun showBubble() = main.post {
+        if (bubble != null) return@post
+        val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
+        val size = (56 * resources.displayMetrics.density).toInt()
+        val v = SparkleView(this).apply {
+            mode = OrbView.Mode.LISTENING
+            background = Ui.rounded(android.graphics.Color.WHITE, size / 2f)
+            elevation = 8 * resources.displayMetrics.density
+            val pad = size / 6
+            setPadding(pad, pad, pad, pad)
+        }
+        val lp = android.view.WindowManager.LayoutParams(
+            size, size,
+            android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            x = resources.displayMetrics.widthPixels - size - 12
+            y = (resources.displayMetrics.heightPixels * 0.35f).toInt()
+        }
+        var downX = 0f; var downY = 0f; var startX = 0; var startY = 0; var moved = false
+        v.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false; true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - downX; val dy = e.rawY - downY
+                    if (kotlin.math.abs(dx) + kotlin.math.abs(dy) > 12) moved = true
+                    lp.x = (startX + dx).toInt(); lp.y = (startY + dy).toInt()
+                    try { wm.updateViewLayout(v, lp) } catch (x: Exception) {}
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (!moved) {
+                        try {
+                            startActivity(android.content.Intent(this, MainActivity::class.java)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP))
+                        } catch (x: Exception) {}
+                    } else {
+                        // snap to the nearest side
+                        val w = resources.displayMetrics.widthPixels
+                        val target = if (lp.x + size / 2 < w / 2) 12 else w - size - 12
+                        val from = lp.x
+                        android.animation.ValueAnimator.ofInt(from, target).apply {
+                            duration = 220
+                            addUpdateListener { a -> lp.x = a.animatedValue as Int; try { wm.updateViewLayout(v, lp) } catch (x: Exception) {} }
+                        }.start()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+        try { wm.addView(v, lp); bubble = v } catch (e: Exception) {}
+    }
+
+    fun hideBubble() = main.post {
+        val v = bubble ?: return@post
+        bubble = null
+        try { (getSystemService(WINDOW_SERVICE) as android.view.WindowManager).removeView(v) } catch (e: Exception) {}
+    }
+
+    /** The bubble shows what Singh AI is doing (listening / thinking / speaking). */
+    fun bubbleMode(m: OrbView.Mode) = main.post { bubble?.mode = m }
 
     companion object {
         @Volatile var instance: JarvisAccess? = null

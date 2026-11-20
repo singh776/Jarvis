@@ -84,6 +84,12 @@ object Gemini {
     /** The quick model used for Live chat / the side-button popup (Settings → backup model). */
     fun fastModel(ctx: Context): String = fallbackModel(ctx).ifEmpty { DEFAULT_FALLBACK_MODEL }
 
+    /** Runs [block] with Google Search available to the model (e.g. to look up what's in a photo). */
+    fun <T> withSearch(block: () -> T): T {
+        extraTools.set(JSONArray().put(JSONObject().put("google_search", JSONObject())))
+        try { return block() } finally { extraTools.set(null) }
+    }
+
     /** Retry on a brand-new connection (after a dropped one). */
     private val freshConn = ThreadLocal<Boolean>()
     /** Extra tools for the next call (Google Search) and the last raw answer (to read the sources). */

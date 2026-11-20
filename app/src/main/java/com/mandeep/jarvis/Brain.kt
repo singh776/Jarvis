@@ -120,11 +120,13 @@ class Brain(private val context: Context) {
     fun askAbout(question: String, file: Attachment, punjabiMode: Boolean, punjabiVoice: Boolean): String {
         if (apiKey.isEmpty()) throw IllegalStateException("No Gemini API key")
         val q = question.ifBlank {
-            if (punjabiMode) "ਇਸ ਵਿੱਚ ਕੀ ਹੈ? ਜੇ ਕੁਝ ਲਿਖਿਆ ਹੈ ਤਾਂ ਪੜ੍ਹ ਕੇ ਦੱਸੋ।" else "What is this? If there is text, read it to me."
+            if (punjabiMode) "ਇਹ ਕੀ ਹੈ? ਪਛਾਣ ਕੇ Google ਤੋਂ ਲੱਭ ਕੇ ਇਸ ਬਾਰੇ ਦੱਸੋ। ਜੇ ਕੁਝ ਲਿਖਿਆ ਹੈ ਤਾਂ ਪੜ੍ਹ ਕੇ ਦੱਸੋ।"
+            else "What is this? Identify it, search Google about it and tell me. If there is text, read it to me."
         }
         val system = "You are Singh AI, the user's phone assistant. The user is showing you a ${file.label}. " +
             "Look at it carefully and do what they ask: describe it, read the text in it, explain it, answer a question about it, " +
             "or translate it (English ↔ Punjabi, or whatever language they ask). When translating or reading, give the full text. " +
+            "If it's a thing, place, product, plant, animal, person in the news, logo, etc., identify it and use Google Search to give useful, correct facts about it (name, what it is, price/where to get it when relevant). " +
             "Your reply is spoken aloud: plain sentences, no markdown, no lists, no emojis. Keep it short unless reading or translating. " +
             langRule(punjabiMode, punjabiVoice) +
             Memory.all(context).let { m -> if (m.isEmpty()) "" else " Things you know about the user: " + m.joinToString("; ") + "." }
@@ -142,7 +144,8 @@ class Brain(private val context: Context) {
             .put(JSONObject().put("text", q))
         contents.put(JSONObject().put("role", "user").put("parts", parts))
 
-        val out = Gemini.generate(context, system, contents, json = false).trim()
+        val out = Gemini.withSearch { Gemini.generate(context, system, contents, json = false) }
+            .replace(Regex("\\[\\d+(,\\s*\\d+)*\\]"), "").replace("**", "").trim()
         if (out.isBlank()) return out
         history.add("user" to "[showed a ${file.label}] $q")
         history.add("model" to JSONObject().put("say", out).put("action", JSONObject().put("type", "none")).toString())

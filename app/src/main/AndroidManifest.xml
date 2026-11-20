@@ -105,6 +105,12 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
+        <!-- keeps Gemini Live's mic on while you use other apps -->
+        <service
+            android:name=".LiveService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- iPhone-style settings -->
         <activity
             android:name=".SettingsActivity"
