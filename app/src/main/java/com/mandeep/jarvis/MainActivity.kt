@@ -1730,6 +1730,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 // your words are final now → keep them as a line
                 if (livePending != null) {
                     val said = liveUserSaid
+                    // "open X" → open it right away ourselves (don't rely only on the AI)
+                    if (said.isNotBlank()) actions.openOnly(said, punjabi)
                     livePending?.let { (it.parent as? ViewGroup)?.removeView(it) }
                     livePending = null
                     if (said.isNotBlank()) { addLiveLine(true, said); messages.add(Msg(true, said)) }

@@ -56,6 +56,8 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
     private var track: AudioTrack? = null
     private val playQueue = LinkedBlockingQueue<ByteArray>()
     @Volatile private var aiSpeaking = false
+    /** Mic stays closed until this time (so Gemini never hears its own voice from the speaker). */
+    @Volatile private var quietUntil = 0L
     private val userBuf = StringBuilder()
     private val aiBuf = StringBuilder()
 
@@ -132,14 +134,19 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
             .put(JSONObject().put("functionDeclarations", JSONArray().put(JSONObject()
                 .put("name", "phone_action")
                 .put("description", "Do something on the user's phone (open apps, play songs, call, message, torch, volume, " +
-                    "alarms, navigation, type in the open chat, read notifications…). Use it whenever the user wants something done.")
+                    "alarms, navigation, search inside apps, type in the open chat, read notifications…). " +
+                    "You MUST call this for every phone task — nothing happens on the phone unless you call it. " +
+                    "Never say an app is open or a task is done before calling this and getting the result.")
                 .put("parameters", JSONObject().put("type", "OBJECT")
                     .put("properties", JSONObject().put("action_json", JSONObject().put("type", "STRING")
                         .put("description", "ONE action object as JSON, exactly like the actions listed in the instructions, " +
                             "e.g. {\"type\":\"open_app\",\"name\":\"YouTube\"}")))
                     .put("required", JSONArray().put("action_json"))))))
             .put(JSONObject().put("google_search", JSONObject()))
-        val live = "\n\nLIVE VOICE MODE: you are talking out loud in real time. Keep every answer short (1-2 sentences), natural " +
+        val live = "\n\nLIVE VOICE MODE: you are talking out loud in real time. Only answer what the USER says; " +
+            "ignore any sound that is your own voice. When the user asks to open/play/call/search/send anything, call phone_action " +
+            "right away (one call), then say one short line about the result. " +
+            "Keep every answer short (1-2 sentences), natural " +
             "and friendly, like a phone call. For phone tasks call the phone_action function with the action JSON " +
             "(do not read JSON out loud). For current facts use Google Search. " +
             (if (punjabi) "Speak Punjabi when the user speaks Punjabi, English when they speak English." else "Reply in the user's language.")
@@ -180,8 +187,11 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
                 var i = 0
                 while (i + 1 < n) { val s = ((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xff)).toShort().toDouble(); sum += s * s; i += 2 }
                 val level = (sqrt(sum / (n / 2)) / 3000.0).toFloat().coerceIn(0f, 1f)
-                if (!aiSpeaking) main.post { listener.onLevel(level) }
-                if (muted) continue
+                // half-duplex: while Gemini talks (and a moment after) the mic is NOT sent,
+                // otherwise it hears itself and answers its own words
+                val talking = aiSpeaking || playQueue.isNotEmpty() || System.currentTimeMillis() < quietUntil
+                if (!talking) main.post { listener.onLevel(level) }
+                if (muted || talking) continue
                 val b64 = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
                 try {
                     send("{\"realtimeInput\":{\"audio\":{\"data\":\"$b64\",\"mimeType\":\"audio/pcm;rate=16000\"}}}")
@@ -208,11 +218,16 @@ class GeminiLive(private val ctx: Context, private val listener: Listener) {
             while (running) {
                 val pcm = try { playQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (e: Exception) { null }
                 if (pcm == null) {
-                    if (aiSpeaking && playQueue.isEmpty()) { aiSpeaking = false; main.post { listener.onSpeaking(false) } }
+                    if (aiSpeaking && playQueue.isEmpty()) {
+                        aiSpeaking = false
+                        quietUntil = System.currentTimeMillis() + 900 // the speaker still rings out for a moment
+                        main.post { listener.onSpeaking(false) }
+                    }
                     continue
                 }
                 if (!aiSpeaking) { aiSpeaking = true; main.post { listener.onSpeaking(true) } }
                 try { t.write(pcm, 0, pcm.size) } catch (e: Exception) {}
+                quietUntil = System.currentTimeMillis() + pcm.size / 48 + 900 // audio length (24 kHz, 16-bit) + echo tail
             }
         }.start()
     }

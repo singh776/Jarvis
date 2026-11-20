@@ -286,6 +286,9 @@ class Actions(private val activity: Context) {
         return p(pa, "ਫ਼ੋਨ ਵਿੱਚੋਂ ${song.second} ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing ${song.second} from your phone.")
     }
 
+    /** Only "open X" (used by Live so a spoken "open YouTube" always opens, even if the AI forgets). */
+    fun openOnly(text: String, pa: Boolean): String? = try { openQuick(text, pa) } catch (e: Exception) { null }
+
     private fun openQuick(text: String, pa: Boolean): String? {
         var t = " " + text.lowercase(Locale.ROOT).replace(Regex("[.,!?।]"), " ") + " "
         val verbs = listOf(
