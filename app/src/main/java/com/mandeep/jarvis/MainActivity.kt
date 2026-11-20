@@ -106,6 +106,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     /** Speaks with the HD (Gemini) voice when it's on; falls back to the phone voice by itself. */
     private fun speakOut(text: String, id: String) {
+        // only ONE voice at a time
+        tts?.stop()
+        HdVoice.stop()
         if (HdVoice.usable(this)) {
             HdVoice.speak(this, text,
                 onStart = { setMode(OrbView.Mode.SPEAKING) },
@@ -1003,7 +1006,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 listenAfterSpeech = listenAfter
                 val rest = text.removePrefix(early).trim()
                 val engine = tts
-                if (rest.isNotEmpty() && engine != null && ttsReady && !HdVoice.speaking) {
+                if (rest.isNotEmpty() && engine != null && ttsReady && !HdVoice.usable(this)) {
                     earlyDone = false
                     engine.speak(rest, TextToSpeech.QUEUE_ADD, null, "jarvis-" + System.currentTimeMillis())
                 } else if (earlyDone) { earlyDone = false; afterSpeaking() }
@@ -1314,6 +1317,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
         when {
+            res.typeText != null -> {
+                // Singh AI is the app on screen — type in the app behind it via screen control
+                startTask("Open the last app/chat the user was in and type exactly: \"${res.typeText}\"" +
+                    (if (res.typeSend) " then tap Send." else ". Do NOT send."), result.say, pa)
+            }
             task != null && task.isNotBlank() -> startTask(task, result.say, pa)
             res.pressSend -> {
                 // WhatsApp is open with the message typed — screen control taps Send right away.

@@ -108,6 +108,27 @@ object Offline {
         "का", "की", "के", "मुझे", "कोई", "एक", "गाना", "गाने", "गीत", "जी", "ज़रा"
     )
 
+    /** Singers people usually ask for (any other name works through the AI too). */
+    val SINGERS = listOf(
+        "sidhu moose wala", "sidhu moose", "sidhu moosewala", "sidhu", "diljit dosanjh", "diljit", "karan aujla", "ap dhillon", "shubh",
+        "babbu maan", "gurdas maan", "amrinder gill", "ammy virk", "jass manak", "guru randhawa", "arjan dhillon",
+        "satinder sartaaj", "sartaaj", "kulwinder billa", "gippy grewal", "r nait", "bohemia", "imran khan", "garry sandhu",
+        "hardy sandhu", "nimrat khaira", "jasmine sandlas", "prem dhillon", "gurnam bhullar", "jordan sandhu", "sukh e",
+        "navaan sandhu", "cheema y", "chani nattan", "sultaan", "tegi pannu", "talwiinder", "arijit singh", "badshah",
+        "yo yo honey singh", "honey singh", "raftaar", "b praak", "jassi gill", "mankirt aulakh", "gur sidhu", "nirvair pannu",
+        "harrdy sandhu", "parmish verma", "jazzy b", "surjit bindrakhia", "kuldeep manak", "amar singh chamkila", "chamkila",
+        "the weeknd", "drake", "taylor swift", "ed sheeran", "justin bieber", "eminem", "atif aslam", "neha kakkar",
+        "ਸਿੱਧੂ ਮੂਸੇ ਵਾਲਾ", "ਸਿੱਧੂ", "ਦਿਲਜੀਤ", "ਕਰਨ ਔਜਲਾ", "ਬੱਬੂ ਮਾਨ", "ਗੁਰਦਾਸ ਮਾਨ", "ਅਮਰਿੰਦਰ ਗਿੱਲ", "ਐਮੀ ਵਿਰਕ", "ਸ਼ੁੱਭ", "ਸਰਤਾਜ"
+    )
+
+    /** "Diljit de gaane" → "diljit" (just a singer, no song name) — then play their latest songs. */
+    fun singerOnly(q: String): String? {
+        val t = q.trim().lowercase()
+        if (t.isEmpty()) return null
+        val s = SINGERS.firstOrNull { t == it || t.removeSuffix(" new").removeSuffix(" latest").trim() == it } ?: return null
+        return s
+    }
+
     /** "Sidhu Moose Wala da gaana YouTube te la de" → "sidhu moose wala". */
     fun songQuery(t: String): String =
         t.trim().split(" ").filter { it.isNotBlank() && it !in FILLER }.joinToString(" ").trim()

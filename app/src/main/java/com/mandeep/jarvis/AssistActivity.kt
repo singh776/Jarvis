@@ -253,7 +253,9 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         Thread {
             var failed = false
             val reply = try {
-                brain.ask(text, pa, punjabiVoice, "Battery info not checked.", fast = true)
+                brain.ask(text, pa, punjabiVoice,
+                    JarvisAccess.instance?.foregroundInfo()?.takeIf { it.isNotBlank() }?.let { "Open app (the user is looking at it now): $it" } ?: "",
+                    fast = true)
             } catch (e: Exception) {
                 failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
@@ -283,12 +285,19 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
         val res = try { Actions(this).run(reply.action, pa, confirmed = true) } catch (e: Exception) { ActionResult() }
         val type = reply.action?.optString("type", "none") ?: "none"
         when {
+            res.typeText != null -> {
+                val acc = JarvisAccess.instance
+                showAnswer(reply.say.ifBlank { if (pa) "ਲਿਖ ਰਿਹਾ ਹਾਂ…" else "Typing…" })
+                close() // get out of the way, then type in the user's app
+                acc?.typeHere(res.typeText, res.typeSend, pa)
+            }
             !res.task.isNullOrBlank() -> {
                 val acc = JarvisAccess.instance
                 if (acc == null) speak(if (pa) "ਇਸ ਕੰਮ ਲਈ ਸੈਟਿੰਗ ਵਿੱਚ ਸਕਰੀਨ ਕੰਟਰੋਲ ਚਾਲੂ ਕਰੋ।" else "Turn on Screen control in Settings for this.", false)
                 else {
-                    speak(reply.say.ifBlank { if (pa) "ਹੁਣੇ ਕਰਦਾ ਹਾਂ।" else "On it." }, false)
-                    main.postDelayed({ acc.runTask(res.task!!, pa); close() }, 900)
+                    showAnswer(reply.say.ifBlank { if (pa) "ਹੁਣੇ ਕਰਦਾ ਹਾਂ।" else "On it." })
+                    close() // close first, so the task works in the user's app (not on this popup)
+                    acc.runTask(res.task!!, pa)
                 }
             }
             res.pressSend -> {
@@ -306,7 +315,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
             }
             else -> {
                 val spoken = listOfNotNull(reply.say.takeIf { it.isNotBlank() }, res.message).joinToString(" ")
-                val again = !failed && type == "none" && spoken.trim().endsWith("?")
+                val again = !failed && type == "none" // keep the conversation going until you stop talking
                 speak(spoken.ifBlank { "…" }, again)
             }
         }
@@ -330,6 +339,7 @@ class AssistActivity : Activity(), TextToSpeech.OnInitListener {
     private fun speak(text: String, again: Boolean) {
         showAnswer(text)
         listenAfter = again
+        tts?.stop(); HdVoice.stop() // only one voice at a time
         if (HdVoice.usable(this)) {
             HdVoice.speak(this, text,
                 onStart = { setMode(OrbView.Mode.SPEAKING) },

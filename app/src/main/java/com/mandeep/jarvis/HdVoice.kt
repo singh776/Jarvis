@@ -76,21 +76,53 @@ object HdVoice {
      * Speaks [text]. [onStart] when sound begins, [onDone] when finished.
      * [onFail] (main thread) if HD can't be used — then speak with the phone voice instead.
      */
+    private val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+
+    /** Splits into sentences (small ones joined) so the first one can play while the rest is made. */
+    private fun chunks(text: String): List<String> {
+        val parts = text.split(Regex("(?<=[.!?।])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
+        val out = ArrayList<String>()
+        for (p in parts) {
+            if (out.isNotEmpty() && (out.last().length < 60 || p.length < 25) && out.last().length + p.length < 220) out[out.size - 1] = out.last() + " " + p
+            else out.add(p)
+        }
+        return out.ifEmpty { listOf(text) }
+    }
+
     fun speak(c: Context, text: String, onStart: () -> Unit, onDone: () -> Unit, onFail: () -> Unit, voiceName: String? = null) {
         stop()
         val id = playId
         val app = c.applicationContext
+        val voice = voiceName ?: voice(app)
         speaking = true
         Thread {
-            val pcm = try { synth(app, text, voiceName ?: voice(app)) } catch (e: Exception) { null }
-            if (id != playId) return@Thread
-            if (pcm == null || pcm.isEmpty()) {
-                speaking = false
-                pauseUntil = System.currentTimeMillis() + 5 * 60_000 // use the phone voice for a bit
-                main.post { onFail() }
-                return@Thread
+            val parts = chunks(text)
+            var next: java.util.concurrent.Future<ByteArray?>? = pool.submit<ByteArray?> {
+                try { synth(app, parts[0], voice) } catch (e: Exception) { null }
             }
-            play(app, pcm, id, onStart, onDone)
+            var started = false
+            for (i in parts.indices) {
+                val pcm = try { next?.get() } catch (e: Exception) { null }
+                if (id != playId) return@Thread
+                if (pcm == null || pcm.isEmpty()) {
+                    if (!started) {
+                        speaking = false
+                        pauseUntil = System.currentTimeMillis() + 5 * 60_000 // use the phone voice for a bit
+                        main.post { onFail() }
+                        return@Thread
+                    }
+                    break
+                }
+                // make the next sentence while this one plays
+                next = if (i + 1 < parts.size) pool.submit<ByteArray?> {
+                    try { synth(app, parts[i + 1], voice) } catch (e: Exception) { null }
+                } else null
+                if (!started) { started = true; main.post { if (id == playId) onStart() } }
+                if (!playBlocking(app, pcm, id)) return@Thread
+            }
+            if (id != playId) return@Thread
+            speaking = false
+            main.post { onDone() }
         }.start()
     }
 
@@ -146,8 +178,8 @@ object HdVoice {
         return null
     }
 
-    /** Plays raw 24 kHz 16-bit mono audio (what Gemini sends). */
-    private fun play(c: Context, pcm: ByteArray, id: Int, onStart: () -> Unit, onDone: () -> Unit) {
+    /** Plays raw 24 kHz 16-bit mono audio (what Gemini sends). Returns false if stopped. */
+    private fun playBlocking(c: Context, pcm: ByteArray, id: Int): Boolean {
         val rate = 24000
         val t = try {
             AudioTrack.Builder()
@@ -159,20 +191,17 @@ object HdVoice {
                 .setTransferMode(AudioTrack.MODE_STATIC)
                 .setBufferSizeInBytes(pcm.size.coerceAtLeast(4096))
                 .build()
-        } catch (e: Exception) { null }
-        if (t == null) { speaking = false; main.post { onDone() }; return }
-        if (id != playId) { t.release(); return }
+        } catch (e: Exception) { null } ?: return true
+        if (id != playId) { t.release(); return false }
         track = t
         t.write(pcm, 0, pcm.size)
         t.play()
-        main.post { if (id == playId) onStart() }
         val ms = pcm.size / 2 * 1000L / rate
-        val end = System.currentTimeMillis() + ms + 150
-        while (System.currentTimeMillis() < end && id == playId) Thread.sleep(40)
-        if (id != playId) return
+        val end = System.currentTimeMillis() + ms + 60
+        while (System.currentTimeMillis() < end && id == playId) Thread.sleep(30)
+        if (id != playId) return false
         try { t.stop(); t.release() } catch (e: Exception) {}
-        track = null
-        speaking = false
-        main.post { onDone() }
+        if (track === t) track = null
+        return true
     }
 }

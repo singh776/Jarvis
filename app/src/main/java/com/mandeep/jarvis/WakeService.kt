@@ -412,7 +412,8 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
         Thread {
             var failed = false
             val reply: Reply = try {
-                brain.ask(text, pa, punjabiVoice, phoneInfo())
+                brain.ask(text, pa, punjabiVoice, phoneInfo() +
+                    (JarvisAccess.instance?.foregroundInfo()?.takeIf { it.isNotBlank() }?.let { "\nOpen app (the user is looking at it now): $it" } ?: ""))
             } catch (e: Exception) {
                 failed = true
                 Reply(Gemini.friendlyError(e, pa), null)
@@ -477,7 +478,7 @@ class WakeService : Service(), TextToSpeech.OnInitListener {
             else -> {
                 val spoken = listOfNotNull(reply.say.takeIf { it.isNotBlank() }, res.message).joinToString(" ")
                 // keep talking if Singh AI asked something back
-                val again = !failed && type == "none" && spoken.trim().let { it.endsWith("?") || it.endsWith("？") }
+                val again = !failed && type == "none" // keep talking back and forth
                 speak(spoken.ifBlank { "…" }, again = again, hideAfter = type != "none" || !again)
             }
         }

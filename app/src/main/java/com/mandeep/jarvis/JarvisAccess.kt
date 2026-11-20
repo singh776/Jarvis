@@ -47,7 +47,82 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
         if (ttsReady) punjabiVoice = t.isLanguageAvailable(Locale("pa", "IN")) >= TextToSpeech.LANG_AVAILABLE
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    /** The app the user is looking at (not Singh AI's own popup) and its title, e.g. a WhatsApp chat name. */
+    @Volatile var foregroundPkg = ""
+        private set
+    @Volatile var foregroundTitle = ""
+        private set
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null || event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString().orEmpty()
+        if (pkg.isEmpty() || pkg == packageName || pkg == "com.android.systemui") return
+        foregroundPkg = pkg
+        foregroundTitle = event.text?.joinToString(" ")?.take(60).orEmpty()
+    }
+
+    /** "WhatsApp — Papa" style description of what's on screen, for the AI. */
+    fun foregroundInfo(): String {
+        if (foregroundPkg.isEmpty()) return ""
+        val label = try {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(foregroundPkg, 0)).toString()
+        } catch (e: Exception) { foregroundPkg }
+        return label + (if (foregroundTitle.isNotBlank() && foregroundTitle != label) " — $foregroundTitle" else "")
+    }
+
+    /** Waits (up to [maxMs]) until Singh AI's own popup is gone and the user's app is on top again. */
+    private fun waitForUserApp(maxMs: Long) {
+        val end = System.currentTimeMillis() + maxMs
+        while (System.currentTimeMillis() < end) {
+            val p = rootInActiveWindow?.packageName?.toString().orEmpty()
+            if (p.isNotEmpty() && p != packageName) return
+            Thread.sleep(80)
+        }
+    }
+
+    private fun findEditable(n: AccessibilityNodeInfo?, depth: Int = 0): AccessibilityNodeInfo? {
+        if (n == null || depth > 45) return null
+        if (n.isEditable && n.isVisibleToUser) return n
+        for (i in 0 until n.childCount) findEditable(n.getChild(i), depth + 1)?.let { return it }
+        return null
+    }
+
+    /**
+     * Types [text] into the message box of the app that's open right now (WhatsApp chat, Messages, Instagram DM…)
+     * and taps Send when [send]. Stays in that app — never goes back or opens anything else.
+     */
+    fun typeHere(text: String, send: Boolean, punjabi: Boolean) {
+        Thread {
+            waitForUserApp(2500)
+            val root = rootInActiveWindow
+            val box = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable } ?: findEditable(root)
+            if (box == null) {
+                main.post { speak(if (punjabi) "ਇੱਥੇ ਲਿਖਣ ਵਾਲਾ ਡੱਬਾ ਨਹੀਂ ਲੱਭਿਆ। ਪਹਿਲਾਂ ਚੈਟ ਖੋਲ੍ਹੋ।" else "I can't find a message box here. Open the chat first.") }
+                return@Thread
+            }
+            type(box, text)
+            if (!send) {
+                main.post { speak(if (punjabi) "ਲਿਖ ਦਿੱਤਾ।" else "Typed it.") }
+                return@Thread
+            }
+            Thread.sleep(450)
+            var sent = false
+            val end = System.currentTimeMillis() + 4000
+            while (!sent && System.currentTimeMillis() < end) {
+                val r = rootInActiveWindow
+                val pkg = r?.packageName?.toString().orEmpty()
+                val btn = r?.findAccessibilityNodeInfosByViewId("$pkg:id/send")?.firstOrNull()
+                    ?: r?.findAccessibilityNodeInfosByViewId("$pkg:id/send_button")?.firstOrNull()
+                    ?: findByDesc(r, listOf("send", "send message", "ਭੇਜੋ", "भेजें", "भेजो"))
+                    ?: r?.findAccessibilityNodeInfosByText("Send")?.firstOrNull { it.isVisibleToUser && it.text?.toString()?.trim().equals("send", true) }
+                if (btn != null && btn.isVisibleToUser) { click(btn); sent = true } else Thread.sleep(200)
+            }
+            main.post {
+                speak(if (sent) (if (punjabi) "ਭੇਜ ਦਿੱਤਾ।" else "Sent.")
+                else (if (punjabi) "ਲਿਖ ਦਿੱਤਾ, Send ਦਬਾ ਦਿਓ।" else "Typed it — please tap Send."))
+            }
+        }.start()
+    }
     override fun onInterrupt() {}
 
     override fun onDestroy() {
@@ -378,6 +453,7 @@ class JarvisAccess : AccessibilityService(), TextToSpeech.OnInitListener {
     }
 
     private fun agentLoop(goal: String, punjabi: Boolean): String {
+        waitForUserApp(2500) // let Singh AI's popup close first, so we work in the user's app
         val steps = ArrayList<String>()
         Thread.sleep(600) // let the screen settle after the app goes to the background
         for (step in 1..MAX_STEPS) {
@@ -456,6 +532,7 @@ Reply with ONLY one JSON object for the next step. Every step may include "note"
 {"action":"open_app","name":"<app name>"}
 {"action":"done","say":"<1-2 short spoken sentences in $lang telling the user the result; if the goal was to read something, say what it says>"}
 Rules: do EXACTLY the goal — nothing extra, never ask questions; take the shortest path (fewest steps, act fast);
+START FROM THE CURRENT SCREEN: if the right app / chat is already open, do the goal right there — never press back or home and never open another app unless the goal needs it;
 to message someone in a chat app, use the app's search, open the chat, type in the message box and tap Send only if the goal says send; if an element is not visible, scroll; if a popup blocks, close it; after typing a search, click the search/enter button or a suggestion.
 Never pay, buy, transfer money, enter passwords or card numbers, or delete accounts/data: stop with "done" and tell the user to finish that part themselves.
 If the goal is already complete, reply "done".

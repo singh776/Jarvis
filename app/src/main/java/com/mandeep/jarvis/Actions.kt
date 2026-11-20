@@ -36,6 +36,9 @@ data class ActionResult(
     val task: String? = null,
     val confirm: String? = null,
     val pressSend: Boolean = false,
+    /** Type this into the app that's open right now (and send if [typeSend]). */
+    val typeText: String? = null,
+    val typeSend: Boolean = false,
 )
 
 /** Carries out the phone action the brain asked for. */
@@ -77,11 +80,19 @@ class Actions(private val activity: Context) {
                     activity.getSharedPreferences("jarvis", Context.MODE_PRIVATE).edit().putBoolean("punjabi", toPa).apply()
                     ActionResult()
                 }
+                "play_artist" -> {
+                    val who = action.optString("artist").ifBlank { action.optString("query") }
+                    playSinger(who, CarAudio.inCar(activity) || norm(action.optString("app")) == "youtubemusic")
+                    ActionResult()
+                }
                 "play_music" -> {
                     Playlist.add(activity, action.optString("query"))
                     msg(playMusic(action.optString("query"), action.optString("app")))
                 }
                 "play_playlist" -> msg(playPlaylist(action.optBoolean("shuffle", false), pa))
+                "type_here" -> if (JarvisAccess.instance == null)
+                    ActionResult(p(pa, "ਇਸ ਲਈ ਸੈਟਿੰਗ ਵਿੱਚ Screen control ਚਾਲੂ ਕਰੋ।", "Turn on Screen control in Settings for this."))
+                else ActionResult(typeText = action.optString("text"), typeSend = action.optBoolean("send", true))
                 "playlist_remove" -> msg(
                     if (Playlist.remove(activity, action.optString("query"))) p(pa, "ਪਲੇਲਿਸਟ ਵਿੱਚੋਂ ਕੱਢ ਦਿੱਤਾ।", "Removed from your playlist.")
                     else p(pa, "ਇਹ ਗਾਣਾ ਪਲੇਲਿਸਟ ਵਿੱਚ ਨਹੀਂ ਮਿਲਿਆ।", "That song isn't in your playlist.")
@@ -161,6 +172,12 @@ class Actions(private val activity: Context) {
             val q = Offline.songQuery(t)
             if (!online) return playOffline(q, pa)
             val query = q.ifEmpty { "latest punjabi songs" }
+            // only a singer's name → play a queue of their latest songs (don't ask which one)
+            val singer = Offline.singerOnly(q) ?: if (q.isEmpty()) "latest punjabi" else null
+            if (singer != null) {
+                playSinger(singer, t.contains("youtube music") || CarAudio.inCar(activity))
+                return p(pa, "$singer ਦੇ ਨਵੇਂ ਗਾਣੇ ਲਾ ਰਿਹਾ ਹਾਂ।", "Playing $singer's latest songs.")
+            }
             Playlist.add(activity, query)
             when {
                 t.contains("spotify") -> playMusic(query, "spotify")
@@ -213,6 +230,37 @@ class Actions(private val activity: Context) {
         }
 
         return openQuick(text, pa)
+    }
+
+    /**
+     * A singer's latest songs, one after another: finds their newest songs on YouTube and plays them as a queue.
+     * In the car (or when asked) YouTube Music plays the artist instead.
+     */
+    private fun playSinger(singer: String, ytMusic: Boolean) {
+        val ytm = "com.google.android.apps.youtube.music"
+        if (ytMusic && installed(ytm)) {
+            try {
+                start(Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                    .putExtra(SearchManager.QUERY, singer)
+                    .putExtra(MediaStore.EXTRA_MEDIA_ARTIST, singer)
+                    .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE)
+                    .setPackage(ytm))
+                return
+            } catch (e: Exception) {}
+        }
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread {
+            val ids = try { YouTubeFinder.videoIds("$singer new songs", 15) } catch (e: Exception) { emptyList() }
+            main.post {
+                try {
+                    if (ids.size >= 2) {
+                        val url = "https://www.youtube.com/watch_videos?video_ids=" + ids.joinToString(",")
+                        try { start(Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage("com.google.android.youtube")) }
+                        catch (e: ActivityNotFoundException) { view(url) }
+                    } else youtube("$singer new song")
+                } catch (e: Exception) {}
+            }
+        }.start()
     }
 
     /** No internet: play a song saved on the phone. */
